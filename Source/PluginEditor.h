@@ -152,6 +152,12 @@ private:
     LockLabel waveLab { {}, "WAVE" }, noiseLab { {}, "NOISE" };
     juce::Label lockHint { {}, "RIGHT-CLICK = LOCK" };
     juce::TextButton trigB { "TRIGGER" };
+    // engine model / reverse / output routing for the selected part
+    juce::ComboBox modelBox, outBox;
+    LockLabel modelLab { {}, "MODEL" };
+    juce::Label outLab { {}, "OUT" };
+    juce::TextButton revB { "REVERSE" };
+    int shownModel() const;
 
     std::unique_ptr<FxChainView> partFxView, globFxView;
     juce::Label fxTitle { {}, "EFFECTS CHAIN" }, fxHint { {}, "USE < > TO REORDER" };

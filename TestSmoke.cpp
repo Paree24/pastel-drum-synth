@@ -699,7 +699,7 @@ int main() {
             minDec = juce::jmin (minDec, sn.p[10]); maxDec = juce::jmax (maxDec, sn.p[10]);
             minSweep = juce::jmin (minSweep, sn.p[1]); maxSweep = juce::jmax (maxSweep, sn.p[1]);
         }
-        bool ok = (int) names.size() == numFactoryKits() && numFactoryKits() == 64
+        bool ok = (int) names.size() == numFactoryKits() && numFactoryKits() == 80
                && snareShapes.size() >= 12 && maxTone - minTone > 50 && maxDec > minDec * 4 && maxSweep - minSweep > 30;
         printf ("snare variety: %d shapes, tone %.0f..%.0f, n-decay %.0f..%.0f ms, sweep %.0f..%.0f st\n",
                 (int) snareShapes.size(), minTone, maxTone, minDec, maxDec, minSweep, maxSweep);

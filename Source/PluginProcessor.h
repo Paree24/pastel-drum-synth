@@ -11,10 +11,10 @@ inline juce::String synthParamID (int part, int slot) {
     return "p" + juce::String (part) + "_" + juce::String (slot);
 }
 
-class DrumProcessor : public juce::AudioProcessor {
+class DrumProcessor : public juce::AudioProcessor, private juce::Timer {
 public:
     DrumProcessor();
-    ~DrumProcessor() override = default;
+    ~DrumProcessor() override;
 
     void prepareToPlay (double sr, int block) override;
     void releaseResources() override {}
@@ -37,10 +37,8 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
-    bool isBusesLayoutSupported (const BusesLayout& l) const override {
-        return l.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
-            || l.getMainOutputChannelSet() == juce::AudioChannelSet::mono();
-    }
+    bool isBusesLayoutSupported (const BusesLayout& l) const override;
+    static constexpr int NumAuxOuts = 12;   // stereo aux buses "Out 2".."Out 13" (one per part if wanted)
 
     // ---- public engine API for UI ----
     static constexpr int MaxVoicesPerPart = 4;
@@ -57,6 +55,10 @@ public:
         FxChainState fx;
         SlotDsp fxDsp[FxChainState::NumSlots];
         std::atomic<float> sendRev { 0.f }, sendDly { 0.f }; // post-chain, post-level sends to the shared returns
+        std::atomic<int> output { 0 };   // 0 = Main, 1..12 = aux bus (disabled bus -> Main)
+        juce::SpinLock revLock;          // guards revCur (audio thread copies the Ptr at trigger)
+        RevBuf::Ptr revCur;              // REVERSE: the part's sound, rendered + reversed
+        juce::uint64 revSig = 0;         // message thread: settings the cache was rendered from
         void prepare (float sr, const juce::dsp::ProcessSpec& spec) {
             for (auto& v : voices) v.prepare (sr);
             FxProcessor::prepareAll (fxDsp, FxChainState::NumSlots, spec);
@@ -73,6 +75,7 @@ public:
     std::atomic<bool> limiterOn { true };
     std::atomic<float> outLevel { 0.f };
     std::atomic<int> selectedPart { 0 };
+    std::atomic<int> auditionReq { -1 };   // UI TRIGGER: part to hit on the next block (same path as MIDI)
 
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
@@ -92,7 +95,7 @@ public:
     // sends and the whole FX chain. Locked items are never touched by
     // RANDOMIZE / MUTATE / KIT RND. Session state: saved with the DAW
     // project, kept across kit changes (not stored in kit files).
-    enum { LockWave = 20, LockNoise, LockSendRev, LockSendDly, LockFx, NumLocks };
+    enum { LockWave = 20, LockNoise, LockSendRev, LockSendDly, LockFx, LockModel, NumLocks };
     bool isLocked (int part, int key) const { return locks[juce::jlimit (0, NumParts - 1, part)][juce::jlimit (0, NumLocks - 1, key)]; }
     void setLocked (int part, int key, bool on) { locks[juce::jlimit (0, NumParts - 1, part)][juce::jlimit (0, NumLocks - 1, key)] = on; }
     void toggleLock (int part, int key) { setLocked (part, key, ! isLocked (part, key)); }
@@ -103,6 +106,12 @@ public:
     void randomizePartFx (int part, float intensity); // fresh musical FX chain from a per-part pool
     void mutatePart (int part, float amount = 0.25f);
     void mutateKit (float amount = 0.18f);
+
+    // engine MODEL per part (0 = CLASSIC): sets the choice + loads that model's default knobs (undoable)
+    void setPartModel (int part, int model);
+    static juce::String modelParamID (int part, int k) { return "p" + juce::String (part) + "_mp" + juce::String (k); }
+    // REVERSE: (re)render reversed copies for parts that need one (message thread; timer + tests)
+    void updateReverseCaches();
 
     // undo support: simple stack of kit states
     void pushUndo();
@@ -124,6 +133,12 @@ private:
     juce::Random liveRng { (juce::uint32) juce::Time::currentTimeMillis() };
 
     void triggerPart (int part, float vel);
+    void readPartFromApvts (int p, PartParams& out) const;   // model / knobs / reverse (allocation-free)
+    void randomizeModel (int part, float intensity);
+    void mutateModel (int part, float amount);
+    void timerCallback() override { updateReverseCaches(); }
+    static BusesProperties makeBuses();
+    juce::ReferenceCountedArray<RevBuf> revPool;   // keeps every reversed buffer alive until no voice holds it
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DrumProcessor)
 };
 

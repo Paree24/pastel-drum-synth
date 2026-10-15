@@ -165,6 +165,15 @@ void PartCard::paint (juce::Graphics& g) {
     g.setColour (juce::Colour (0xff6a6a78));
     g.setFont (juce::Font (9.f));
     g.drawText (noteName (proc.parts[idx].midiNote), getWidth() - 42, 6, 38, 14, juce::Justification::centredRight);
+    // engine model + REVERSE badge (blank for the CLASSIC voice)
+    juce::String sub;
+    if (auto* md = modelDef (idx, proc.parts[idx].params.model)) sub = md->name;
+    if (proc.parts[idx].params.reverse) sub = sub.isEmpty() ? "REV" : sub + " / REV";
+    if (sub.isNotEmpty()) {
+        g.setColour (partColour (idx).withAlpha (0.75f));
+        g.setFont (juce::Font (9.f, juce::Font::bold));
+        g.drawText (sub, 4, 20, getWidth() - 8, 11, juce::Justification::centred);
+    }
     // accent underline
     g.setColour (partColour (idx).withAlpha (0.8f));
     g.fillRoundedRectangle (8, (float) getHeight() - 7, (float) getWidth() - 16, 3, 1.5f);
@@ -175,7 +184,7 @@ void PartCard::mouseDown (const juce::MouseEvent&) {
 }
 void PartCard::resized() {
     auto r = getLocalBounds().reduced (5);
-    r.removeFromTop (20); // name painted in paint()
+    r.removeFromTop (30); // name + model painted in paint()
     auto btns = r.removeFromBottom (24);
     solo.setBounds (btns.removeFromLeft (btns.getWidth() / 2).reduced (4, 3));
     mute.setBounds (btns.reduced (4, 3));
@@ -596,11 +605,37 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
     tabSynth.setClickingTogglesState (true); tabAmp.setClickingTogglesState (true);
     tabPitch.setClickingTogglesState (true); tabSend.setClickingTogglesState (true);
     tabSynth.setToggleState (true, juce::dontSendNotification);
-    trigB.onClick = [this] {
-        // audition: trigger via midi-note match through processBlock queue is complex; use direct voice trigger
-        auto& pe = proc.parts[sel()];
-        for (auto& v : pe.voices) if (! v.active) { v.trigger (sel(), pe.params, 0.9f, 0.f); break; }
+    trigB.onClick = [this] { proc.auditionReq = sel(); };   // audio thread plays it like a MIDI hit (models, REVERSE)
+    // MODEL: picking one loads its default knobs (undoable); right-click locks it from RANDOMIZE
+    modelBox.onChange = [this] {
+        int m = modelBox.getSelectedId() - 1;
+        if (m >= 0 && m != shownModel()) { proc.setPartModel (sel(), m); rebuildSynthPanel(); }
     };
+    modelBox.setTooltip ("Synthesis engine for this part. CLASSIC = the original voice");
+    modelLab.onRightClick = [this] {
+        proc.toggleLock (sel(), DrumProcessor::LockModel);
+        modelLab.locked = proc.isLocked (sel(), DrumProcessor::LockModel); modelLab.repaint();
+        for (auto& k : synthKnobs) if (k->getProperties()["model"]) { k->locked = modelLab.locked; k->repaint(); }
+    };
+    revB.setClickingTogglesState (true);
+    revB.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffa78bfa));
+    revB.setTooltip ("Play this part's sound backwards");
+    revB.onClick = [this] {
+        if (auto* q = proc.apvts.getParameter ("p" + juce::String (sel()) + "_rev"))
+            q->setValueNotifyingHost (revB.getToggleState() ? 1.f : 0.f);
+        for (auto& c : cards) c->repaint();
+    };
+    outBox.addItem ("MAIN", 1);
+    for (int o = 1; o <= DrumProcessor::NumAuxOuts; ++o) outBox.addItem ("OUT " + juce::String (o + 1), o + 1);
+    outBox.setTooltip ("Output bus for this part (enable the extra outputs in your host; disabled buses fall back to MAIN)");
+    outBox.onChange = [this] { proc.parts[sel()].output = outBox.getSelectedId() - 1; };
+    for (auto* l : { (juce::Label*) &modelLab, &outLab }) {
+        l->setFont (juce::Font (10.f, juce::Font::bold));
+        l->setColour (juce::Label::textColourId, juce::Colour (0xff9a9aa8));
+        l->setJustificationType (juce::Justification::centredRight);
+    }
+    synthPanel.addAndMakeVisible (modelBox); synthPanel.addAndMakeVisible (modelLab);
+    synthPanel.addAndMakeVisible (revB); synthPanel.addAndMakeVisible (outBox); synthPanel.addAndMakeVisible (outLab);
     waveBox.addItemList ({ "Sine","Tri","Saw","Square","FM" }, 1);
     noiseBox.addItemList ({ "White","Pink","Violet","Metallic","Digital","Crackle","Tape","Resonant" }, 1);
     waveBox.onChange = [this] {
@@ -706,6 +741,12 @@ static juce::String fmtVal (const ParamMeta& m, float v) {
     return juce::String (v, 1);
 }
 
+int DrumEditor::shownModel() const {
+    if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (proc.apvts.getParameter ("p" + juce::String (sel()) + "_model")))
+        return c->getIndex();
+    return 0;
+}
+
 void DrumEditor::rebuildSynthPanel() {
     for (auto& k : synthKnobs) synthPanel.removeChildComponent (k.get());
     synthKnobs.clear();
@@ -713,13 +754,49 @@ void DrumEditor::rebuildSynthPanel() {
     partTitle.setText (juce::String (partName (p)), juce::dontSendNotification);
     partTitle.setFont (juce::Font (15.f, juce::Font::bold));
     partTitle.setColour (juce::Label::textColourId, partColour (p));
+    const int model = shownModel();
+    const ModelDef* md = modelDef (p, model);
+    if (md && tab == 2) tab = 0;   // models have no PITCH page (their pitch knobs live on SYNTH)
+    tabPitch.setVisible (md == nullptr);
+    waveBox.setVisible (md == nullptr); waveLab.setVisible (md == nullptr);
+    noiseBox.setVisible (md == nullptr); noiseLab.setVisible (md == nullptr);
+    {
+        auto names = modelNames (p);
+        bool same = modelBox.getNumItems() == names.size();
+        for (int i = 0; same && i < names.size(); ++i) same = modelBox.getItemText (i) == names[i];
+        if (! same) { modelBox.clear (juce::dontSendNotification); modelBox.addItemList (names, 1); }
+        modelBox.setSelectedId (model + 1, juce::dontSendNotification);
+        modelLab.locked = proc.isLocked (p, DrumProcessor::LockModel); modelLab.repaint();
+        revB.setToggleState (proc.apvts.getRawParameterValue ("p" + juce::String (p) + "_rev")->load() > 0.5f, juce::dontSendNotification);
+        outBox.setSelectedId (proc.parts[p].output.load() + 1, juce::dontSendNotification);
+    }
     tabSynth.setToggleState (tab == 0, juce::dontSendNotification);
     tabAmp.setToggleState (tab == 1, juce::dontSendNotification);
     tabPitch.setToggleState (tab == 2, juce::dontSendNotification);
     tabSend.setToggleState (tab == 3, juce::dontSendNotification);
 
     std::vector<int> slots;
-    if (tab == 0) {
+    if (md != nullptr) {
+        // engine model: its own knobs on SYNTH, only PAN on AMP (the model shapes its own envelope)
+        if (tab == 0)
+            for (int k = 0; k < md->nparams; ++k) {
+                const ModelParam mp = md->p[k];
+                auto kb = std::make_unique<Knob> (mp.label, partColour (p));
+                kb->s.setColour (juce::Slider::rotarySliderFillColourId, partColour (p));
+                kb->val.setColour (juce::Label::textColourId, partColour (p).brighter (0.2f));
+                kb->attach (proc.apvts, DrumProcessor::modelParamID (p, k));
+                kb->s.onValueChange = [kbp = kb.get(), mp] {
+                    kbp->val.setText (modelFormat (mp, modelCook (mp, (float) kbp->s.getValue())), juce::dontSendNotification);
+                };
+                kb->getProperties().set ("model", true);
+                kb->locked = proc.isLocked (p, DrumProcessor::LockModel);
+                kb->s.onRightClick = [this] { modelLab.onRightClick(); };   // one lock covers model + knobs
+                kb->s.onValueChange();
+                synthPanel.addAndMakeVisible (*kb);
+                synthKnobs.push_back (std::move (kb));
+            }
+    }
+    else if (tab == 0) {
         // snare: BODY/NOISE/N DECAY/TONE/DRIVE/COMP/SUB/VEL all live here
         for (int s : { 0, 8, 9, 10, 11, 12, 13, 14, 15 }) slots.push_back (s);
         for (int s = 16; s < 20; ++s) if (advMetaForPart (p, s)) slots.push_back (s); // PUNCH/BOOST/NZ>FX, SFX LFO...
@@ -885,11 +962,22 @@ void DrumEditor::resized() {
 
     // synth panel internals
     auto sr = synthPanel.getLocalBounds().reduced (10);
-    partTitle.setBounds (sr.removeFromTop (22));
+    {
+        auto titleRow = sr.removeFromTop (24);
+        outBox.setBounds (titleRow.removeFromRight (90).reduced (1));
+        outLab.setBounds (titleRow.removeFromRight (36).reduced (1));
+        titleRow.removeFromRight (8);
+        revB.setBounds (titleRow.removeFromRight (78).reduced (1));
+        titleRow.removeFromRight (8);
+        modelBox.setBounds (titleRow.removeFromRight (150).reduced (1));
+        modelLab.setBounds (titleRow.removeFromRight (62).reduced (1));
+        partTitle.setBounds (titleRow);
+        sr.removeFromTop (2);
+    }
     auto tabRow = sr.removeFromTop (26);
     tabSynth.setBounds (tabRow.removeFromLeft (62).reduced (1));
     tabAmp.setBounds (tabRow.removeFromLeft (48).reduced (1));
-    tabPitch.setBounds (tabRow.removeFromLeft (52).reduced (1));
+    if (tabPitch.isVisible()) tabPitch.setBounds (tabRow.removeFromLeft (52).reduced (1));   // hidden for engine models
     tabSend.setBounds (tabRow.removeFromLeft (62).reduced (1));
     lockHint.setBounds (tabRow.removeFromLeft (120).reduced (6, 1));
     trigB.setBounds (tabRow.removeFromRight (72).reduced (1));
@@ -905,8 +993,8 @@ void DrumEditor::resized() {
     scopeView.setBounds (visArea.removeFromTop ((int) (visArea.getHeight() * 0.42)).reduced (4));
     analyzerView.setBounds (visArea.reduced (4));
     if (n > 0) {
-        int cols = 5, rows = (n + cols - 1) / cols;
-        int kcw = knobArea.getWidth() / cols, kh = knobArea.getHeight() / juce::jmax (1, rows);
+        int cols = n > 13 ? 6 : 5, rows = (n + cols - 1) / cols;
+        int kcw = knobArea.getWidth() / cols, kh = juce::jmin (150, knobArea.getHeight() / juce::jmax (1, rows));   // few knobs: no giant dials
         for (int i = 0; i < n; ++i) {
             auto kb = juce::Rectangle<int> (knobArea.getX() + (i % cols) * kcw, knobArea.getY() + (i / cols) * kh, kcw, kh).reduced (4);
             synthKnobs[(size_t) i]->setBounds (kb);
