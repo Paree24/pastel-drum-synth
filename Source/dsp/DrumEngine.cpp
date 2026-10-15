@@ -128,6 +128,8 @@ void defaultParamsForPart (int part, PartParams& out) {
         if (auto* am = advMetaForPart (part, s)) out.p[s] = am->def;
     if (isMembranePart (part)) out.p[18] = 0.f; // boost off by default; dial to taste
     out.wave = 0; out.satMode = 0;
+    out.model = 0; out.reverse = false;
+    for (auto& v : out.m) v = 0.5f;
     // sensible noise types per part
     switch (part) {
         case Kick: out.noiseType = 0; break;
@@ -145,6 +147,18 @@ void defaultParamsForPart (int part, PartParams& out) {
 
 // ---------------- voice ----------------
 void DrumVoice::trigger (int partType, const PartParams& pr, float vel, float tuneOffsetSt) {
+    rev = nullptr;
+    if (pr.model > 0)
+        if (auto* md = modelDef (partType, pr.model)) {
+            // engine MODEL: the classic state below is left untouched
+            part = partType; velocity = juce::jlimit (0.05f, 1.f, vel);
+            active = true; choke = 0.f; postFx = 0.f; modelOn = true;
+            float cooked[NumModelParams] = {};
+            for (int i = 0; i < md->nparams; ++i) cooked[i] = modelCook (md->p[i], pr.m[i]);
+            mv.trigger (*md, cooked, velocity, tuneOffsetSt, (juce::uint32) noise.rng.nextInt());
+            return;
+        }
+    modelOn = false;
     part = partType; velocity = juce::jlimit (0.05f, 1.f, vel);
     active = true; fbState = 0.f; choke = 0.f;
     tuneOff = tuneOffsetSt; lastTuneF = 9999.f;
@@ -430,6 +444,19 @@ float DrumVoice::renderCymbal (const PartParams& pr) {
 
 float DrumVoice::renderWithParams (const PartParams& pr) {
     if (! active) return 0.f;
+    if (rev != nullptr) {   // REVERSE playback
+        postFx = 0.f;
+        if (revPos >= (int) rev->data.size()) { active = false; rev = nullptr; return 0.f; }
+        float s = rev->data[(size_t) revPos++] * revGain;
+        if (revFadeStep > 0.f) { revFade -= revFadeStep; if (revFade <= 0.f) { active = false; rev = nullptr; return 0.f; } s *= revFade; }
+        return s;
+    }
+    if (modelOn) {
+        postFx = 0.f;
+        float s = mv.render();
+        if (! mv.active) active = false;
+        return s;
+    }
     if (part == Snare) return renderSnare (pr);
     if (part == ClosedHat || part == OpenHat || part == Ride || part == Crash) return renderCymbal (pr);
     if (part == Metallic) return renderMetal (pr);

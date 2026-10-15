@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 #include "Presets.h"
 #include "PluginProcessor.h"
 #include <map>
@@ -199,7 +201,9 @@ static const KitDef kKits[] = {
     { "Cobalt Drive", K_BOOMY, 52, S_GRIT, 1, 1.0f, 0, H_CRISP, C_MID, T_SYNTH, P_TECHY, FX_P_RUMBLE, 0.1f, 0.6f, 0.f },
 };
 
-int numFactoryKits() { return (int) (sizeof (kKits) / sizeof (kKits[0])); }
+static constexpr int kNumClassicKits = (int) (sizeof (kKits) / sizeof (kKits[0]));
+static constexpr int kNumModelKits = 16;   // kits 65..80: built on the engine MODELS (after the classic ones: indices never move)
+int numFactoryKits() { return kNumClassicKits + kNumModelKits; }
 
 static void buildPerc (Kit& k, int flavour) {
     auto& MM = k.parts[Membrane]; auto& MT = k.parts[Metallic]; auto& SX = k.parts[Sfx];
@@ -329,7 +333,7 @@ static void buildFx (Kit& k, int pack) {
     }
 }
 
-void mintFactoryKit (int i, Kit& k) {
+static void mintClassicKit (int i, Kit& k) {
     for (int p = 0; p < NumParts; ++p) {
         defaultParamsForPart (p, k.parts[p]);
         FxProcessor::clearChain (k.partFx[p]);
@@ -337,7 +341,7 @@ void mintFactoryKit (int i, Kit& k) {
         if (isMembranePart (p)) k.parts[p].p[18] = 0.f; // BOOST off unless a kit wants it
     }
     FxProcessor::clearChain (k.globalFx);
-    const KitDef& d = kKits[juce::jlimit (0, numFactoryKits() - 1, i)];
+    const KitDef& d = kKits[juce::jlimit (0, kNumClassicKits - 1, i)];
     k.name = d.name; k.genre = {};
 
     auto& K  = k.parts[Kick],    &SN = k.parts[Snare];
@@ -394,6 +398,240 @@ void mintFactoryKit (int i, Kit& k) {
         for (int s = 0; s < 20; ++s)
             if (auto* m = slotMeta (p, s))
                 k.parts[p].p[s] = juce::jlimit (m->min, m->max, k.parts[p].p[s]);
+}
+
+// ---------------- engine-model kits ----------------
+// Each starts from a classic row (parts left on CLASSIC, FX, levels, sends), then puts
+// engine models on parts. Knobs are named by label in the model's own units.
+static int classicKitByName (const char* name) {
+    for (int i = 0; i < kNumClassicKits; ++i) if (juce::String (kKits[i].name) == name) return i;
+    jassertfalse; return 0;
+}
+static void M (Kit& k, int part, int model, std::initializer_list<std::pair<const char*, float>> knobs = {}, bool reverse = false) {
+    auto& pp = k.parts[part];
+    pp.model = model;
+    pp.reverse = reverse;
+    modelDefaults01 (part, model, pp.m);
+    auto* md = modelDef (part, model);
+    for (auto& kv : knobs) {
+        int idx = -1;
+        for (int i = 0; md && i < md->nparams; ++i) if (juce::String (md->p[i].label) == kv.first) idx = i;
+        if (idx < 0) { fprintf (stderr, "kit '%s': %s has no knob %s\n", k.name.toRawUTF8(), md ? md->name : "?", kv.first); std::abort(); }
+        pp.m[idx] = modelUncook (md->p[idx], kv.second);
+    }
+}
+static void Rev (Kit& k, int part) { k.parts[part].reverse = true; }
+
+// model indices per part (0 = CLASSIC)
+enum { KK_PUNCH = 1, KK_RUMBLE, KK_BOOM };
+enum { SS_LAYERED = 1, SS_SWEPT, SS_MACHINE, SS_CLAP };
+enum { HH_FM = 1, HH_SHAKER, HH_TAMB };
+enum { RR_CLOUD = 1, RR_BELL };
+enum { CC_CLOUD = 1, CC_DARK };
+enum { TT_MEMBRANE = 1, TT_CONGA };
+enum { MM_CONGA = 1, MM_BONGO, MM_RIM, MM_WOOD, MM_GLASS, MM_SNAP, MM_CLAP };
+enum { ME_CLANG = 1, ME_COWBELL, ME_AGOGO, ME_TAMB, ME_GLASS };
+enum { FXS_RISER = 1, FXS_IMPACT, FXS_LASER, FXS_SIREN, FXS_SUBDROP, FXS_VOX, FXS_ZAP, FXS_NOISEHIT, FXS_HORN, FXS_BOOM };
+
+static void toms (Kit& k, int model, std::initializer_list<std::pair<const char*, float>> knobs, const float hz[3]) {
+    int tp[3] = { Tom1, Tom2, LowTom };
+    for (int t = 0; t < 3; ++t) {
+        M (k, tp[t], model, knobs);
+        auto& pp = k.parts[tp[t]];
+        if (auto* md = modelDef (tp[t], model)) pp.m[0] = modelUncook (md->p[0], hz[t]);   // knob 0 = TUNE on both tom engines
+    }
+}
+
+static void mintModelKit (int j, Kit& k) {
+    static const char* base[kNumModelKits] = {
+        "Hot Wire", "Pressure Cell", "Polar Static", "Shadow Press", "Orbit Swing", "Bamboo Ghost", "Midnight Oil", "Molten Core",
+        "Pixel Rain", "Glass Hour", "Lantern Fog", "Rocket Dust", "Copper Line", "Tape Spirit", "Fuse Box", "Feather Weight" };
+    static const char* names[kNumModelKits] = {
+        "Iron Tide", "Pressure Glass", "Low Tide Engine", "Concrete Hum", "Velvet Pump", "Sunday Parade", "Sub Cathedral", "Thunder Ledger",
+        "Neon Bite", "Mirror Room", "Ghost Swell", "Brass Signal", "Paper Machine", "Molasses", "Steel Weather", "Soft Machinery" };
+    j = juce::jlimit (0, kNumModelKits - 1, j);
+    mintClassicKit (classicKitByName (base[j]), k);
+    k.name = names[j];
+    auto noFx = [&k] (int part) { FxProcessor::clearChain (k.partFx[part]); };
+    // kick-led kits: the snare sits back (not a backbeat crack)
+    if (j == 2 || j == 3 || j == 4 || j == 5 || j == 12 || j == 15) k.level[Snare] = 0.5f;
+    switch (j) {
+        case 0: // Iron Tide: tight punch kick, high layered snare, FM hats, clang + impact
+            M (k, Kick, KK_PUNCH, { { "TUNE", 56 }, { "DECAY", 210 }, { "CLICK", 110 }, { "DRIVE", 10 } });
+            noFx (Kick);
+            M (k, Snare, SS_LAYERED, { { "TUNE", 195 }, { "BODY DECAY", 150 }, { "TAIL DECAY", 420 }, { "ROOM", 18 } });
+            M (k, ClosedHat, HH_FM, { { "TUNE", 3400 }, { "DECAY", 38 } });
+            M (k, OpenHat, HH_FM, { { "TUNE", 3400 }, { "DECAY", 380 } });
+            M (k, Ride, RR_CLOUD);
+            M (k, Crash, CC_CLOUD, { { "DECAY", 2.0f } });
+            { const float hz[3] = { 190, 150, 110 }; toms (k, TT_MEMBRANE, { { "DECAY", 380 } }, hz); }
+            M (k, Membrane, MM_RIM);
+            M (k, Metallic, ME_CLANG, { { "TUNE", 240 }, { "DECAY", 0.9f } });
+            M (k, Sfx, FXS_IMPACT, { { "DECAY", 1.8f } });
+            break;
+        case 1: // Pressure Glass: short kick, very high tight snare, bright hats, snap / glass / zap
+            M (k, Kick, KK_PUNCH, { { "TUNE", 60 }, { "DECAY", 170 }, { "CLICK", 125 }, { "CLICK TONE", 6500 }, { "PUNCH", 9 } });
+            noFx (Kick);
+            M (k, Snare, SS_LAYERED, { { "TUNE", 235 }, { "SWEEP FROM", 950 }, { "BODY DECAY", 120 }, { "TAIL", -8 }, { "TAIL DECAY", 300 },
+                                        { "SNAP", 130 }, { "ROOM", 12 } });
+            M (k, ClosedHat, HH_FM, { { "TUNE", 4200 }, { "DECAY", 30 }, { "TONE", 10000 } });
+            M (k, OpenHat, HH_FM, { { "TUNE", 4200 }, { "DECAY", 300 }, { "TONE", 10000 } });
+            M (k, Crash, CC_CLOUD, { { "TUNE", 2300 }, { "DECAY", 1.6f } });
+            M (k, Membrane, MM_SNAP);
+            M (k, Metallic, ME_GLASS, { { "TUNE", 1800 } });
+            M (k, Sfx, FXS_ZAP, { { "START", 4000 }, { "DECAY", 120 } });
+            break;
+        case 2: // Low Tide Engine: rumble kick, drum-machine snare, FM hats, cowbell, noise hit
+            M (k, Kick, KK_RUMBLE, { { "TUNE", 48 }, { "RUMBLE", 80 }, { "RUMBLE DECAY", 1.2f } });
+            noFx (Kick);
+            M (k, Snare, SS_MACHINE, { { "TUNE", 220 }, { "SNAP DECAY", 260 } });
+            M (k, ClosedHat, HH_FM, { { "DECAY", 42 }, { "FM", 3 } });
+            M (k, OpenHat, HH_FM, { { "DECAY", 420 }, { "FM", 3 } });
+            M (k, Ride, RR_CLOUD, { { "DECAY", 2.4f } });
+            M (k, Metallic, ME_COWBELL);
+            M (k, Membrane, MM_CLAP, { { "ROOM", 30 } });
+            M (k, Sfx, FXS_NOISEHIT, { { "DECAY", 220 }, { "GATE", 16 } });
+            break;
+        case 3: // Concrete Hum: deep rumble, dark machine snare, shaker + FM open hat, clang, riser
+            M (k, Kick, KK_RUMBLE, { { "TUNE", 42 }, { "DECAY", 420 }, { "RUMBLE", 110 }, { "RUMBLE DECAY", 2.0f }, { "RUMBLE TONE", 140 } });
+            noFx (Kick);
+            M (k, Snare, SS_MACHINE, { { "TUNE", 200 }, { "NOISE LP", 7000 }, { "GRIT", 110 }, { "SNAP DECAY", 300 } });
+            M (k, ClosedHat, HH_SHAKER, { { "LENGTH", 120 }, { "TONE", 6500 } });
+            M (k, OpenHat, HH_FM, { { "TUNE", 2700 }, { "DECAY", 500 }, { "TONE", 7000 } });
+            M (k, Ride, RR_CLOUD, { { "TUNE", 360 }, { "BELL", 25 } });
+            M (k, Crash, CC_DARK);
+            M (k, Metallic, ME_CLANG, { { "TUNE", 160 }, { "DECAY", 1.6f }, { "DRIVE", 14 } });
+            M (k, Sfx, FXS_RISER, { { "LENGTH", 3.5f } });
+            break;
+        case 4: // Velvet Pump: round punch kick, clap, FM hats, bell ride, congas, bongo, cowbell, vox
+            M (k, Kick, KK_PUNCH, { { "TUNE", 52 }, { "DECAY", 330 }, { "CLICK", 70 }, { "DRIVE", 8 } });
+            M (k, Snare, SS_CLAP, { { "TAIL", 260 }, { "ROOM", 30 } });
+            M (k, ClosedHat, HH_FM, { { "DECAY", 50 }, { "METAL", 45 } });
+            M (k, OpenHat, HH_FM, { { "DECAY", 360 }, { "METAL", 45 } });
+            M (k, Ride, RR_BELL);
+            { const float hz[3] = { 380, 300, 220 }; toms (k, TT_CONGA, {}, hz); }
+            M (k, Membrane, MM_BONGO);
+            M (k, Metallic, ME_COWBELL, { { "TUNE", 600 } });
+            M (k, Sfx, FXS_VOX, { { "WORD", 1 } });
+            break;
+        case 5: // Sunday Parade: soft kick, roomy clap, tambourine + shaker, congas, agogo, siren
+            M (k, Kick, KK_PUNCH, { { "TUNE", 54 }, { "DECAY", 300 }, { "CLICK", 50 }, { "DRIVE", 6 }, { "PUNCH", 5 } });
+            M (k, Snare, SS_CLAP, { { "BURSTS", 5 }, { "TAIL", 320 }, { "ROOM", 45 }, { "ROOM SIZE", 1.1f } });
+            M (k, ClosedHat, HH_TAMB, { { "LENGTH", 160 } });
+            M (k, OpenHat, HH_SHAKER, { { "LENGTH", 300 } });
+            { const float hz[3] = { 360, 280, 200 }; toms (k, TT_CONGA, { { "SLAP", 45 } }, hz); }
+            M (k, Membrane, MM_CONGA, { { "TUNE", 420 } });
+            M (k, Metallic, ME_AGOGO);
+            M (k, Sfx, FXS_SIREN, { { "LENGTH", 1.2f } });
+            break;
+        case 6: // Sub Cathedral: long boom kick, swept snare, short FM hats, dark crash, snap, glass, sub drop
+            M (k, Kick, KK_BOOM, { { "TUNE", 45 }, { "DECAY", 1.4f } });
+            noFx (Kick);
+            M (k, Snare, SS_SWEPT);
+            M (k, ClosedHat, HH_FM, { { "DECAY", 28 }, { "TUNE", 3800 } });
+            M (k, OpenHat, HH_FM, { { "DECAY", 280 }, { "TUNE", 3800 } });
+            M (k, Crash, CC_DARK, { { "DECAY", 3.2f } });
+            M (k, Membrane, MM_SNAP);
+            M (k, Metallic, ME_GLASS, { { "TUNE", 1400 }, { "DECAY", 900 } });
+            M (k, Sfx, FXS_SUBDROP);
+            break;
+        case 7: // Thunder Ledger: driven boom, low layered snare with room, cloud crash, big toms, impact
+            M (k, Kick, KK_BOOM, { { "TUNE", 50 }, { "DECAY", 0.9f }, { "DRIVE", 14 }, { "CLICK", 45 } });
+            noFx (Kick);
+            M (k, Snare, SS_LAYERED, { { "TUNE", 150 }, { "BODY DECAY", 240 }, { "TAIL DECAY", 1000 }, { "ROOM", 45 } });
+            M (k, ClosedHat, HH_FM, { { "TUNE", 2900 } });
+            M (k, OpenHat, HH_FM, { { "TUNE", 2900 } });
+            M (k, Crash, CC_CLOUD, { { "DECAY", 3.5f } });
+            { const float hz[3] = { 150, 115, 80 }; toms (k, TT_MEMBRANE, { { "DECAY", 700 }, { "DRIVE", 8 } }, hz); }
+            M (k, Metallic, ME_CLANG, { { "TUNE", 120 }, { "DECAY", 2.0f } });
+            M (k, Sfx, FXS_IMPACT, { { "BOOM", 45 }, { "DECAY", 3.0f } });
+            break;
+        case 8: // Neon Bite: crushed punch kick, gritty machine snare, crushed FM hats, rim, laser
+            M (k, Kick, KK_PUNCH, { { "TUNE", 58 }, { "DECAY", 220 }, { "CRUSH", 35 }, { "DRIVE TYPE", 2 } });
+            M (k, Snare, SS_MACHINE, { { "TUNE", 260 }, { "GRIT", 190 }, { "DRIVE", 6 }, { "SNAP DECAY", 200 } });
+            M (k, ClosedHat, HH_FM, { { "CRUSH", 40 }, { "FM", 6 } });
+            M (k, OpenHat, HH_FM, { { "CRUSH", 40 }, { "FM", 6 } });
+            M (k, Membrane, MM_RIM, { { "CRUSH", 50 } });
+            M (k, Metallic, ME_CLANG, { { "TUNE", 420 }, { "DECAY", 0.4f }, { "CRUSH", 45 } });
+            M (k, Sfx, FXS_LASER);
+            break;
+        case 9: // Mirror Room: punch + layered, then reversed crash / glass / impact for swells
+            M (k, Kick, KK_PUNCH, { { "TUNE", 55 }, { "DECAY", 280 } });
+            M (k, Snare, SS_LAYERED, { { "TUNE", 180 }, { "ROOM", 35 } });
+            M (k, ClosedHat, HH_FM);
+            M (k, OpenHat, HH_FM);
+            M (k, Crash, CC_CLOUD, { { "DECAY", 2.2f } }, true);
+            M (k, Membrane, MM_GLASS, { { "DECAY", 800 } }, true);
+            M (k, Metallic, ME_TAMB);
+            M (k, Sfx, FXS_IMPACT, { { "DECAY", 1.5f }, { "ROOM", 40 } }, true);
+            break;
+        case 10: // Ghost Swell: classic kick + snare, shaker hats, clouds, reversed dark crash + glass, wood, riser
+            M (k, ClosedHat, HH_SHAKER, { { "LENGTH", 140 } });
+            M (k, Ride, RR_CLOUD, { { "SHIMMER", 60 } });
+            M (k, Crash, CC_DARK, { { "DECAY", 2.8f } }, true);
+            M (k, Membrane, MM_WOOD);
+            M (k, Metallic, ME_GLASS, { { "TUNE", 1100 }, { "DECAY", 1200 } }, true);
+            M (k, Sfx, FXS_RISER, { { "LENGTH", 2.0f }, { "RESO", 4 } });
+            break;
+        case 11: // Brass Signal: punch kick, layered snare, FM hats, membrane toms, clap perc, cowbell, air horn
+            M (k, Kick, KK_PUNCH, { { "TUNE", 54 }, { "DECAY", 260 }, { "DRIVE", 14 } });
+            noFx (Kick);
+            M (k, Snare, SS_LAYERED, { { "TUNE", 175 }, { "CLIP", 7 } });
+            M (k, ClosedHat, HH_FM);
+            M (k, OpenHat, HH_FM);
+            { const float hz[3] = { 175, 135, 95 }; toms (k, TT_MEMBRANE, {}, hz); }
+            M (k, Membrane, MM_CLAP);
+            M (k, Metallic, ME_COWBELL, { { "SHAPE", 1 } });
+            M (k, Sfx, FXS_HORN);
+            break;
+        case 12: // Paper Machine: classic kick, machine snare, FM closed + tambourine open, rim, agogo, zap
+            M (k, Snare, SS_MACHINE, { { "TUNE", 245 }, { "SNAPPY", 80 } });
+            M (k, ClosedHat, HH_FM, { { "DECAY", 35 } });
+            M (k, OpenHat, HH_TAMB, { { "LENGTH", 300 } });
+            M (k, Membrane, MM_RIM, { { "TONE", 2100 } });
+            M (k, Metallic, ME_AGOGO, { { "TUNE", 800 } });
+            M (k, Sfx, FXS_ZAP, { { "FM", 3 } });
+            break;
+        case 13: // Molasses: slow boom, big-room clap, shaker, bell ride, low congas, wood, glass, vox
+            M (k, Kick, KK_BOOM, { { "TUNE", 47 }, { "DECAY", 1.1f }, { "DRIVE", 6 } });
+            M (k, Snare, SS_CLAP, { { "TAIL", 420 }, { "ROOM", 55 }, { "ROOM SIZE", 1.5f }, { "BRIGHT", -2 } });
+            M (k, ClosedHat, HH_SHAKER, { { "TONE", 5500 } });
+            M (k, OpenHat, HH_SHAKER, { { "TONE", 5500 }, { "LENGTH", 360 } });
+            M (k, Ride, RR_BELL, { { "TUNE", 520 } });
+            { const float hz[3] = { 260, 200, 150 }; toms (k, TT_CONGA, { { "DECAY", 380 } }, hz); }
+            M (k, Membrane, MM_WOOD, { { "TUNE", 1200 } });
+            M (k, Metallic, ME_GLASS, { { "TUNE", 900 } });
+            M (k, Sfx, FXS_VOX, { { "WORD", 4 }, { "PITCH", 140 } });
+            break;
+        case 14: // Steel Weather: hard rumble, gritty layered snare, bright FM hats, driven toms, snap, clang, noise hit
+            M (k, Kick, KK_RUMBLE, { { "TUNE", 50 }, { "DRIVE", 16 }, { "RUMBLE DRIVE", 16 }, { "RUMBLE DECAY", 1.0f } });
+            noFx (Kick);
+            M (k, Snare, SS_LAYERED, { { "TUNE", 185 }, { "CLIP", 10 }, { "NOISE", 150 }, { "TAIL DECAY", 600 } });
+            M (k, ClosedHat, HH_FM, { { "TONE", 11000 }, { "DRIVE", 8 } });
+            M (k, OpenHat, HH_FM, { { "TONE", 11000 }, { "DRIVE", 8 } });
+            M (k, Crash, CC_CLOUD, { { "METAL", 90 } });
+            { const float hz[3] = { 165, 125, 90 }; toms (k, TT_MEMBRANE, { { "DRIVE", 12 } }, hz); }
+            M (k, Membrane, MM_SNAP, { { "TONE", 3000 } });
+            M (k, Metallic, ME_CLANG, { { "DRIVE", 18 } });
+            M (k, Sfx, FXS_NOISEHIT, { { "DECAY", 300 } });
+            break;
+        default: // Soft Machinery: soft punch kick, swept snare, shaker + tambourine, cloud ride, bongo, tambourine, boom
+            M (k, Kick, KK_PUNCH, { { "TUNE", 53 }, { "DECAY", 300 }, { "CLICK", 40 }, { "DRIVE", 4 }, { "PUNCH", 4 } });
+            M (k, Snare, SS_SWEPT, { { "ROOM", 30 } });
+            M (k, ClosedHat, HH_SHAKER);
+            M (k, OpenHat, HH_TAMB);
+            M (k, Ride, RR_CLOUD, { { "STICK", 30 } });
+            { const float hz[3] = { 170, 135, 100 }; toms (k, TT_MEMBRANE, { { "STICK", 20 } }, hz); }
+            M (k, Membrane, MM_BONGO);
+            M (k, Metallic, ME_TAMB, { { "HITS", 2 } });
+            M (k, Sfx, FXS_BOOM, { { "TUNE", 55 }, { "DECAY", 1.2f } });
+            break;
+    }
+}
+
+void mintFactoryKit (int i, Kit& k) {
+    if (i < kNumClassicKits) mintClassicKit (juce::jmax (0, i), k);
+    else mintModelKit (i - kNumClassicKits, k);
 }
 
 // ---------------- file-backed factory + user presets ----------------

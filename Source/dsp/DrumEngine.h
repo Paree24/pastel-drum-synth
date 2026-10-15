@@ -1,5 +1,6 @@
 #pragma once
 #include "DrumDsp.h"
+#include "Models.h"
 
 // ============================================================
 // 12-part drum engine: per-type params, ranges, voices
@@ -39,6 +40,10 @@ struct PartParams {
     int wave = 0;       // osc wave 0..4
     int noiseType = 0;  // 0..7
     int satMode = 0;    // 0..4
+    // engine MODEL (0 = CLASSIC: the voice above, untouched) + its 0..1 knobs, and REVERSE
+    int model = 0;
+    float m[NumModelParams] = {};
+    bool reverse = false;
 
     juce::ValueTree toVT() const {
         juce::ValueTree v ("PART");
@@ -46,6 +51,11 @@ struct PartParams {
         v.setProperty ("wave", wave, nullptr);
         v.setProperty ("noiseType", noiseType, nullptr);
         v.setProperty ("satMode", satMode, nullptr);
+        if (model != 0 || reverse) {   // classic parts keep the original file format
+            v.setProperty ("model", model, nullptr);
+            for (int i = 0; i < NumModelParams; ++i) v.setProperty ("m" + juce::String (i), m[i], nullptr);
+            v.setProperty ("rev", reverse, nullptr);
+        }
         return v;
     }
     void fromVT (const juce::ValueTree& v) {
@@ -53,6 +63,9 @@ struct PartParams {
         wave = v.getProperty ("wave", wave);
         noiseType = v.getProperty ("noiseType", noiseType);
         satMode = v.getProperty ("satMode", satMode);
+        model = v.getProperty ("model", 0);
+        for (int i = 0; i < NumModelParams; ++i) m[i] = (float) v.getProperty ("m" + juce::String (i), 0.5f);
+        reverse = (bool) v.getProperty ("rev", false);
     }
 };
 
@@ -87,6 +100,12 @@ bool isEnvelopeSlot (int part, int slot);
 // SFX: 0 Tune 1 Sweep(+-st) 2 SweepTime 3 Curve(bipolar) 4 Attack 5 Decay 6 Sustain 7 Release
 //       8 FM 9 Noise 10 Cutoff 11 FilterEnv 12 Drive 13 Crush 14 Reso 15 VelAmt
 //       16 LfoRate 17 LfoPitch 18 LfoFilt 19 FmRatio (adv)
+
+// a part's sound rendered once and reversed (REVERSE button); shared, immutable
+struct RevBuf : juce::ReferenceCountedObject {
+    using Ptr = juce::ReferenceCountedObjectPtr<RevBuf>;
+    std::vector<float> data;
+};
 
 // ---- one mono voice ----
 struct DrumVoice {
@@ -137,12 +156,24 @@ struct DrumVoice {
         cymA.setSampleRate (sr); cymB.setSampleRate (sr); cymC.setSampleRate (sr);
         cymD.setSampleRate (sr); cymE.setSampleRate (sr);
         snTailHp.setSampleRate (sr); snTailLp.setSampleRate (sr); snSnapBp.setSampleRate (sr); snBridge.setSampleRate (sr);
+        mv.prepare (sr);
     }
     void trigger (int partType, const PartParams& pr, float vel, float tuneOffsetSt);
+    // REVERSE: play a pre-rendered, reversed copy of the part's sound
+    void startReverse (int partType, RevBuf::Ptr buf, float gainIn) {
+        part = partType; rev = buf; revPos = 0; revGain = gainIn; revFade = 1.f; revFadeStep = 0.f;
+        modelOn = false; active = buf != nullptr; postFx = 0.f; choke = 0.f;
+    }
     // one-shot unless SUSTAIN is dialled in: sequencer note lengths must not
     // truncate DECAY (sustain > -60 dB = gated, note-off starts RELEASE)
-    void noteOff() { if (amp.sustain > 0.f) amp.noteOff(); }
-    void chokeNow (float ms = 25.f) { choke = ms / 1000.f * sampleRate; }
+    void noteOff() { if (! modelOn && rev == nullptr && amp.sustain > 0.f) amp.noteOff(); }
+    void chokeNow (float ms = 25.f) {
+        choke = ms / 1000.f * sampleRate;
+        if (modelOn) mv.choke (ms);
+        if (rev != nullptr) revFadeStep = std::max (revFadeStep, revFade / std::max (1.f, choke));
+    }
+    ModelVoice mv; bool modelOn = false;
+    RevBuf::Ptr rev; int revPos = 0; float revGain = 1.f, revFade = 1.f, revFadeStep = 0.f;
     bool isDone() const { return ! active; }
     float render();
     float renderWithParams (const PartParams& pr);

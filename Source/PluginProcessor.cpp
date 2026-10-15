@@ -3,8 +3,27 @@
 
 namespace mds {
 
+juce::AudioProcessor::BusesProperties DrumProcessor::makeBuses() {
+    auto b = BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true);
+    for (int i = 0; i < NumAuxOuts; ++i)
+        b = b.withOutput ("Out " + juce::String (i + 2), juce::AudioChannelSet::stereo(), false);
+    return b;
+}
+
+bool DrumProcessor::isBusesLayoutSupported (const BusesLayout& l) const {
+    auto main = l.getMainOutputChannelSet();
+    if (main != juce::AudioChannelSet::stereo() && main != juce::AudioChannelSet::mono()) return false;
+    for (int i = 1; i < l.outputBuses.size(); ++i) {
+        const auto& s = l.outputBuses.getReference (i);
+        if (! s.isDisabled() && s != juce::AudioChannelSet::stereo()) return false;
+    }
+    return true;
+}
+
+DrumProcessor::~DrumProcessor() { stopTimer(); }
+
 DrumProcessor::DrumProcessor()
-    : juce::AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : juce::AudioProcessor (makeBuses()),
       apvts (*this, nullptr, "PARAMS", makeLayout()) {
     for (int p = 0; p < NumParts; ++p) {
         defaultParamsForPart (p, parts[p].params);
@@ -14,6 +33,7 @@ DrumProcessor::DrumProcessor()
     }
     FxProcessor::clearChain (globalFx);
     loadKit (1);
+    startTimerHz (10);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout DrumProcessor::makeLayout() {
@@ -58,6 +78,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout DrumProcessor::makeLayout() 
             juce::ParameterID ("tune" + juce::String (p), 1),
             juce::String (partName (p)) + " Tune",
             juce::NormalisableRange<float> (-24.f, 24.f), 0.f));
+        // engine MODEL + its 16 generic 0..1 knobs (meaning depends on the model) + REVERSE
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID ("p" + juce::String (p) + "_model", 1), juce::String (partName (p)) + " Model", modelNames (p), 0));
+        for (int k = 0; k < NumModelParams; ++k)
+            layout.add (std::make_unique<juce::AudioParameterFloat> (
+                juce::ParameterID (modelParamID (p, k), 1), juce::String (partName (p)) + " Model " + juce::String (k + 1),
+                juce::NormalisableRange<float> (0.f, 1.f), 0.5f));
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID ("p" + juce::String (p) + "_rev", 1), juce::String (partName (p)) + " Reverse", false));
     }
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID ("master", 1), "Master",
@@ -97,8 +126,17 @@ void DrumProcessor::pullApvtsToParts() {
         parts[p].params.satMode = 0; // fixed Soft: DRIVE knob + DISTORTION carry the grit
         if (auto* l = apvts.getRawParameterValue ("mix" + juce::String (p) + "_lvl")) parts[p].level = l->load();
         if (auto* pn = apvts.getRawParameterValue ("mix" + juce::String (p) + "_pan")) parts[p].pan = pn->load();
+        readPartFromApvts (p, parts[p].params);
     }
     if (auto* m = apvts.getRawParameterValue ("master")) masterGain = m->load();
+}
+
+void DrumProcessor::readPartFromApvts (int p, PartParams& out) const {
+    if (auto* md = apvts.getRawParameterValue ("p" + juce::String (p) + "_model"))
+        out.model = juce::jlimit (0, numModels (p) - 1, (int) std::round (md->load()));
+    for (int k = 0; k < NumModelParams; ++k)
+        if (auto* mp = apvts.getRawParameterValue (modelParamID (p, k))) out.m[k] = mp->load();
+    if (auto* rv = apvts.getRawParameterValue ("p" + juce::String (p) + "_rev")) out.reverse = rv->load() > 0.5f;
 }
 
 void DrumProcessor::triggerPart (int part, float vel) {
@@ -115,12 +153,18 @@ void DrumProcessor::triggerPart (int part, float vel) {
     DrumVoice* tgt = nullptr;
     for (auto& v : parts[part].voices) if (! v.active) { tgt = &v; break; }
     if (! tgt) tgt = &parts[part].voices[0]; // steal oldest-ish
+    if (parts[part].params.reverse) {
+        RevBuf::Ptr b;
+        { const juce::SpinLock::ScopedLockType sl (parts[part].revLock); b = parts[part].revCur; }
+        if (b != nullptr) { tgt->startReverse (part, b, 0.3f + 0.7f * juce::jlimit (0.f, 1.f, vel)); return; }
+    }
     tgt->trigger (part, parts[part].params, vel, tuneOff);
 }
 
 void DrumProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
     juce::ScopedNoDenormals noDenormals;
     pullApvtsToParts(); // cheap pointer reads; no allocation
+    if (int a = auditionReq.exchange (-1); a >= 0 && a < NumParts) triggerPart (a, 0.9f);
 
     for (const auto md : midi) {
         auto msg = md.getMessage();
@@ -138,8 +182,27 @@ void DrumProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     int N = buffer.getNumSamples();
-    auto* L = buffer.getWritePointer (0);
-    auto* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
+    // multi-out: Main + enabled aux pairs; a part routed to a disabled bus plays on Main
+    for (int ch = 2; ch < buffer.getNumChannels(); ++ch) buffer.clear (ch, 0, N);
+    float* auxL[NumAuxOuts + 1] = {};
+    float* auxR[NumAuxOuts + 1] = {};
+    for (int b = 1; b < juce::jmin (getBusCount (false), NumAuxOuts + 1); ++b) {
+        auto* bus = getBus (false, b);
+        if (bus == nullptr || ! bus->isEnabled()) continue;
+        auto bb = getBusBuffer (buffer, false, b);
+        if (bb.getNumChannels() == 0) continue;
+        auxL[b] = bb.getWritePointer (0);
+        auxR[b] = bb.getNumChannels() > 1 ? bb.getWritePointer (1) : nullptr;
+    }
+    int route[NumParts];
+    for (int p = 0; p < NumParts; ++p) {
+        int o = parts[p].output.load();
+        route[p] = (o > 0 && o <= NumAuxOuts && auxL[o] != nullptr) ? o : 0;
+    }
+    const float auxGain = masterGain.load();
+    auto mainBuf = getBusBuffer (buffer, false, 0);
+    auto* L = mainBuf.getWritePointer (0);
+    auto* R = mainBuf.getNumChannels() > 1 ? mainBuf.getWritePointer (1) : nullptr;
     float sr = (float) sampleRate;
 
     for (int i = 0; i < N; ++i) {
@@ -174,8 +237,15 @@ void DrumProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 float pan = juce::jlimit (0.f, 1.f, pe.pan);
                 float gl = std::cos (pan * juce::MathConstants<float>::halfPi);
                 float gr = std::sin (pan * juce::MathConstants<float>::halfPi);
-                mixL += m * gl * pe.level;
-                mixR += m * gr * pe.level;
+                if (route[p] == 0) {
+                    mixL += m * gl * pe.level;
+                    mixR += m * gr * pe.level;
+                } else {
+                    float ol = m * gl * pe.level * auxGain, orr = m * gr * pe.level * auxGain;
+                    if (! std::isfinite (ol) || ! std::isfinite (orr)) ol = orr = 0.f;
+                    if (auxR[route[p]]) { auxL[route[p]][i] += ol; auxR[route[p]][i] += orr; }
+                    else auxL[route[p]][i] += (ol + orr) * 0.5f;
+                }
                 revIn += m * pe.level * pe.sendRev.load();
                 dlyIn += m * pe.level * pe.sendDly.load();
                 if (va) pe.meter = juce::jmax (pe.meter * 0.9995f, juce::jmin (1.f, std::abs (m * pe.level)));
@@ -254,6 +324,11 @@ void DrumProcessor::applyKitToApvts() {
             pn->setValueNotifyingHost (pn->convertTo0to1 (parts[p].pan));
         if (auto* t = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("tune" + juce::String (p))))
             t->setValueNotifyingHost (t->convertTo0to1 (0.f));
+        if (auto* md = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("p" + juce::String (p) + "_model")))
+            md->setValueNotifyingHost (md->convertTo0to1 ((float) juce::jlimit (0, numModels (p) - 1, parts[p].params.model)));
+        for (int k = 0; k < NumModelParams; ++k)
+            if (auto* mp = apvts.getParameter (modelParamID (p, k))) mp->setValueNotifyingHost (juce::jlimit (0.f, 1.f, parts[p].params.m[k]));
+        if (auto* rv = apvts.getParameter ("p" + juce::String (p) + "_rev")) rv->setValueNotifyingHost (parts[p].params.reverse ? 1.f : 0.f);
     }
     if (auto* m = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("master")))
         m->setValueNotifyingHost (m->convertTo0to1 (masterGain.load()));
@@ -280,6 +355,7 @@ void DrumProcessor::initKitNoUndo() {
         parts[p].mute = false; parts[p].solo = false; // no stuck solos on a blank slate
         parts[p].sendRev = 0.f; parts[p].sendDly = 0.f;
         parts[p].midiNote = partMidiNote (p);
+        parts[p].output = 0;
         FxProcessor::clearChain (parts[p].fx);
     }
     FxProcessor::clearChain (globalFx);
@@ -308,6 +384,7 @@ juce::ValueTree DrumProcessor::fullStateVT() {
         pv.setProperty ("midi", parts[p].midiNote, nullptr);
         pv.setProperty ("sendRev", parts[p].sendRev.load(), nullptr);
         pv.setProperty ("sendDly", parts[p].sendDly.load(), nullptr);
+        if (parts[p].output.load() != 0) pv.setProperty ("out", parts[p].output.load(), nullptr);
         pv.addChild (parts[p].fx.toVT(), -1, nullptr);
         v.addChild (pv, -1, nullptr);
     }
@@ -334,6 +411,7 @@ void DrumProcessor::loadFullStateVT (const juce::ValueTree& v) {
         parts[p].solo = (bool) pv.getProperty ("solo", false);
         parts[p].sendRev = (float) pv.getProperty ("sendRev", 0.f);
         parts[p].sendDly = (float) pv.getProperty ("sendDly", 0.f);
+        parts[p].output = juce::jlimit (0, NumAuxOuts, (int) pv.getProperty ("out", 0));
         parts[p].midiNote = partMidiNote (p); // fixed map (stored "midi" is informational: older files used C4)
         if (pv.getNumChildren() > 0) {
             parts[p].fx.fromVT (pv.getChild (0));
@@ -346,6 +424,7 @@ void DrumProcessor::loadFullStateVT (const juce::ValueTree& v) {
     }
     applyKitToApvts();
     pullApvtsToParts();
+    updateReverseCaches();   // reversed parts play backwards from the very first hit after a load
     ++stateVersion;
 }
 
@@ -408,6 +487,7 @@ void DrumProcessor::undo() {
         parts[p].solo = (bool) pv.getProperty ("solo", false);
         parts[p].sendRev = (float) pv.getProperty ("sendRev", 0.f);
         parts[p].sendDly = (float) pv.getProperty ("sendDly", 0.f);
+        parts[p].output = juce::jlimit (0, NumAuxOuts, (int) pv.getProperty ("out", 0));
         if (pv.getNumChildren() > 0) {
             parts[p].fx.fromVT (pv.getChild (0));
             FxProcessor::normaliseChainOrder (parts[p].fx); // heal duplicated indices
@@ -451,6 +531,7 @@ void DrumProcessor::randomizePart (int part, float intensity) {
         };
         j (sl.p0); j (sl.p1); j (sl.p2); j (sl.p3); j (sl.p4);
     }
+    randomizeModel (part, intensity);
     applyKitToApvts(); pullApvtsToParts();
     ++stateVersion;
     kitName = "Randomized " + juce::String (partName (part));
@@ -521,6 +602,7 @@ void DrumProcessor::randomizeKit (float intensity) {
         if (! isLocked (p, LockSendDly))
             parts[p].sendDly = p != Kick && liveRng.nextFloat() < 0.25f ? liveRng.nextFloat() * 0.25f * intensity : 0.f;
     }
+    for (int p = 0; p < NumParts; ++p) randomizeModel (p, intensity);
     applyKitToApvts(); pullApvtsToParts();
     ++stateVersion;
     kitName = "Randomized Kit";
@@ -545,6 +627,7 @@ void DrumProcessor::mutatePart (int part, float amount) {
         };
         j (sl.p0); j (sl.p1); j (sl.p2);
     }
+    mutateModel (part, amount);   // knobs only: MUTATE never switches the model
     applyKitToApvts(); pullApvtsToParts();
     ++stateVersion;
     kitName = "Mutated " + juce::String (partName (part));
@@ -560,9 +643,109 @@ void DrumProcessor::mutateKit (float amount) {
             parts[p].params.p[s] = juce::jlimit (m->min, m->max, parts[p].params.p[s] + (liveRng.nextFloat() * 2.f - 1.f) * radius);
         }
     }
+    for (int p = 0; p < NumParts; ++p) mutateModel (p, amount);
     applyKitToApvts(); pullApvtsToParts();
     ++stateVersion;
     kitName = "Mutated Kit";
+}
+
+// ---- engine models ----
+void DrumProcessor::setPartModel (int part, int model) {
+    part = juce::jlimit (0, NumParts - 1, part);
+    pushUndo();
+    auto& pp = parts[part].params;
+    pp.model = juce::jlimit (0, numModels (part) - 1, model);
+    modelDefaults01 (part, pp.model, pp.m);
+    if (auto* md = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("p" + juce::String (part) + "_model")))
+        md->setValueNotifyingHost (md->convertTo0to1 ((float) pp.model));
+    for (int k = 0; k < NumModelParams; ++k)
+        if (auto* mp = apvts.getParameter (modelParamID (part, k))) mp->setValueNotifyingHost (pp.m[k]);
+    pullApvtsToParts();
+    ++stateVersion;
+}
+
+// RANDOMIZE may switch the engine model (unless locked); knobs move around the model's defaults.
+// Envelope knobs and VEL>AMP (dynamics) are never randomized; switching model loads their defaults.
+void DrumProcessor::randomizeModel (int part, float intensity) {
+    if (isLocked (part, LockModel)) return;
+    auto& pp = parts[part].params;
+    if (liveRng.nextFloat() < 0.35f * intensity + 0.1f) {
+        int model = liveRng.nextInt (numModels (part));
+        if (model != pp.model) { pp.model = model; modelDefaults01 (part, model, pp.m); }
+    }
+    if (auto* md = modelDef (part, pp.model))
+        for (int k = 0; k < md->nparams; ++k) {
+            if (modelParamIsEnvelope (md->p[k])) continue;
+            float def = modelUncook (md->p[k], md->p[k].def);
+            float wild = def + (liveRng.nextFloat() * 2.f - 1.f) * 0.35f * intensity;
+            pp.m[k] = juce::jlimit (0.f, 1.f, pp.m[k] * (1.f - intensity) + wild * intensity);
+        }
+}
+
+// MUTATE never changes the model, only nudges its knobs
+void DrumProcessor::mutateModel (int part, float amount) {
+    auto& pp = parts[part].params;
+    if (pp.model <= 0 || isLocked (part, LockModel)) return;
+    if (auto* md = modelDef (part, pp.model))
+        for (int k = 0; k < md->nparams; ++k)
+            if (! modelParamIsEnvelope (md->p[k])) pp.m[k] = juce::jlimit (0.f, 1.f, pp.m[k] + (liveRng.nextFloat() * 2.f - 1.f) * amount * 0.25f);
+}
+
+// ---- REVERSE ----
+// The part's sound (whatever engine) is rendered once at full velocity, trimmed, faded and
+// reversed on the message thread; hits then play that buffer. Re-rendered when any setting
+// that shapes the sound changes. The pool keeps every buffer alive until no voice holds it,
+// so the audio thread never frees memory.
+void DrumProcessor::updateReverseCaches() {
+    const double sr = sampleRate;
+    for (int p = 0; p < NumParts; ++p) {
+        auto& pe = parts[p];
+        PartParams pp;
+        defaultParamsForPart (p, pp);
+        for (int s = 0; s < 20; ++s)
+            if (auto* par = apvts.getRawParameterValue (synthParamID (p, s))) pp.p[s] = par->load();
+        if (auto* w = apvts.getRawParameterValue ("p" + juce::String (p) + "_wave")) pp.wave = juce::jlimit (0, 4, (int) std::round (w->load()));
+        if (auto* nz = apvts.getRawParameterValue ("p" + juce::String (p) + "_noise")) pp.noiseType = juce::jlimit (0, 7, (int) std::round (nz->load()));
+        readPartFromApvts (p, pp);
+        if (! pp.reverse) {
+            if (pe.revCur != nullptr) { const juce::SpinLock::ScopedLockType sl (pe.revLock); pe.revCur = nullptr; }
+            pe.revSig = 0;
+            continue;
+        }
+        float tuneOff = 0.f;
+        if (auto* t = apvts.getRawParameterValue ("tune" + juce::String (p))) tuneOff = t->load();
+        juce::uint64 h = 1469598103934665603ull;
+        auto mixIn = [&h] (const void* d, size_t nBytes) {
+            auto* b = static_cast<const unsigned char*> (d);
+            for (size_t i = 0; i < nBytes; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+        };
+        mixIn (pp.p, sizeof (pp.p)); mixIn (&pp.wave, sizeof (int)); mixIn (&pp.noiseType, sizeof (int));
+        mixIn (&pp.model, sizeof (int)); mixIn (pp.m, sizeof (pp.m)); mixIn (&tuneOff, sizeof (float)); mixIn (&sr, sizeof (double));
+        if (h == pe.revSig && pe.revCur != nullptr) continue;
+        auto v = std::make_unique<DrumVoice>();
+        v->prepare ((float) sr);
+        v->noise.rng.setSeed (7777 + p);
+        pp.reverse = false;
+        v->trigger (p, pp, 1.0f, tuneOff);
+        RevBuf::Ptr buf = new RevBuf();
+        auto& data = buf->data;
+        const int maxLen = (int) (sr * 4.0);
+        data.reserve ((size_t) maxLen);
+        for (int i = 0; i < maxLen && v->active; ++i) data.push_back (v->renderWithParams (pp));
+        float pk = 0.f;
+        for (float x : data) pk = std::max (pk, std::abs (x));
+        int end = (int) data.size();
+        while (end > 0 && std::abs (data[(size_t) end - 1]) < pk * 1.0e-3f) --end;
+        data.resize ((size_t) std::max (1, end));
+        int fade = std::min ((int) data.size(), (int) (0.01 * sr));
+        for (int i = 0; i < fade; ++i) data[data.size() - 1 - (size_t) i] *= (float) i / (float) fade;   // soft start once reversed
+        std::reverse (data.begin(), data.end());
+        revPool.add (buf.get());
+        { const juce::SpinLock::ScopedLockType sl (pe.revLock); pe.revCur = buf; }
+        pe.revSig = h;
+    }
+    for (int i = revPool.size(); --i >= 0;)
+        if (revPool.getObjectPointerUnchecked (i)->getReferenceCount() == 1) revPool.remove (i);
 }
 
 } // namespace mds

@@ -3,10 +3,12 @@
 // Proves selector plumbing, not just DSP in isolation.
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Presets.h"
 #include <cstdio>
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <set>
 
 using namespace mds;
 
@@ -38,6 +40,38 @@ static double renderKickHF (DrumProcessor& proc, int waveSel) {
         e += std::abs (s - prev); prev = s;
     }
     return e;
+}
+
+// render through processBlock (all buses), optionally hitting one part by MIDI first
+static juce::AudioBuffer<float> renderProc (DrumProcessor& proc, int part, int nSamples, float vel = 1.f) {
+    juce::AudioBuffer<float> out (proc.getTotalNumOutputChannels(), nSamples);
+    out.clear();
+    int pos = 0; bool hit = part < 0;
+    while (pos < nSamples) {
+        int n = juce::jmin (512, nSamples - pos);
+        juce::AudioBuffer<float> blk (proc.getTotalNumOutputChannels(), n);
+        blk.clear();
+        juce::MidiBuffer mb;
+        if (! hit) { mb.addEvent (juce::MidiMessage::noteOn (10, proc.parts[part].midiNote, vel), 0); hit = true; }
+        proc.processBlock (blk, mb);
+        for (int c = 0; c < out.getNumChannels(); ++c) out.copyFrom (c, pos, blk, c, 0, n);
+        pos += n;
+    }
+    return out;
+}
+static float chanPeak (const juce::AudioBuffer<float>& b, int ch0, int ch1, bool* finite = nullptr) {
+    float pk = 0.f;
+    for (int c = ch0; c <= ch1 && c < b.getNumChannels(); ++c)
+        for (int i = 0; i < b.getNumSamples(); ++i) {
+            float v = b.getSample (c, i);
+            if (! std::isfinite (v) && finite) *finite = false;
+            pk = std::max (pk, std::abs (v));
+        }
+    return pk;
+}
+static void silenceProc (DrumProcessor& proc) {
+    for (auto& pe : proc.parts) for (auto& v : pe.voices) v.active = false;
+    renderProc (proc, -1, 44100 * 5);   // let FX / send tails die
 }
 
 int main() {
@@ -490,6 +524,193 @@ int main() {
         printf ("e2e randomize locks held %d unlocked-moved %d persisted %d %s\n", (int) held, (int) moved, (int) persisted, ok ? "OK" : "FAIL");
         if (! ok) ++fails;
         for (int p = 0; p < NumParts; ++p) for (int k = 0; k < DrumProcessor::NumLocks; ++k) proc.setLocked (p, k, false);
+    }
+
+    // ===== engine MODELS / REVERSE / MULTI-OUT =====
+    {
+        proc.initKitNoUndo();
+        for (int p = 0; p < NumParts; ++p) proc.parts[p].fx.enabled = false;
+        proc.parts[0].sendRev = proc.parts[0].sendDly = 0.f;
+        // every model of every part: finite, audible, and roughly the level of CLASSIC
+        int bad = 0, total = 0;
+        for (int p = 0; p < NumParts; ++p) {
+            proc.parts[p].sendRev = 0.f; proc.parts[p].sendDly = 0.f;
+            float classic = 0.f;
+            for (int m = 0; m < numModels (p); ++m) {
+                proc.setPartModel (p, m);
+                flushMessages(); silenceProc (proc);
+                bool fin = true;
+                auto b = renderProc (proc, p, 44100 * 2);
+                float pk = chanPeak (b, 0, 1, &fin);
+                if (m == 0) classic = pk;
+                bool ok = fin && pk > 1e-3f && pk < 8.f && (m == 0 || (pk > classic * 0.25f && pk < classic * 4.f));
+                if (! ok) { ++bad; printf ("  model %s/%s peak %.3f (classic %.3f) finite %d\n", partName (p), modelNames (p)[m].toRawUTF8(), pk, classic, (int) fin); }
+                ++total;
+            }
+            proc.setPartModel (p, 0);
+        }
+        printf ("e2e models render (%d models) bad %d %s\n", total, bad, bad == 0 ? "OK" : "FAIL");
+        if (bad) ++fails;
+    }
+    {
+        // TRIGGER button path (audition request handled on the audio thread)
+        silenceProc (proc);
+        proc.setPartModel (Snare, 2);
+        proc.auditionReq = Snare;
+        auto b = renderProc (proc, -1, 22050);
+        bool ok = chanPeak (b, 0, 1) > 1e-3f && proc.auditionReq.load() == -1;
+        printf ("e2e audition request plays %s\n", ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
+    }
+    {
+        // RANDOMIZE may switch the model; MUTATE never does; neither moves envelope knobs / VEL>AMP; LockModel holds all
+        proc.setPartModel (Snare, 1);
+        std::set<int> seen;
+        bool envHeld = true;
+        for (int i = 0; i < 40; ++i) {
+            int before = proc.parts[Snare].params.model; float bm[NumModelParams];
+            std::copy (proc.parts[Snare].params.m, proc.parts[Snare].params.m + NumModelParams, bm);
+            proc.randomizePart (Snare, 1.f); flushMessages();
+            auto& pp = proc.parts[Snare].params;
+            seen.insert (pp.model);
+            if (auto* md = modelDef (Snare, pp.model)) {
+                float def[NumModelParams]; modelDefaults01 (Snare, pp.model, def);
+                for (int k = 0; k < md->nparams; ++k)
+                    if (modelParamIsEnvelope (md->p[k]))
+                        envHeld &= std::abs (pp.m[k] - (pp.model == before ? bm[k] : def[k])) < 1e-5f;
+            }
+        }
+        proc.setPartModel (Snare, 3);
+        bool mutKeeps = true, mutMoves = false;
+        for (int i = 0; i < 30; ++i) {
+            float bm[NumModelParams]; std::copy (proc.parts[Snare].params.m, proc.parts[Snare].params.m + NumModelParams, bm);
+            if (i % 2) proc.mutatePart (Snare, 0.5f); else proc.mutateKit (0.5f);
+            flushMessages();
+            auto& pp = proc.parts[Snare].params;
+            mutKeeps &= pp.model == 3;
+            auto* md = modelDef (Snare, 3);
+            for (int k = 0; k < md->nparams; ++k) {
+                if (modelParamIsEnvelope (md->p[k])) envHeld &= std::abs (pp.m[k] - bm[k]) < 1e-5f;
+                else mutMoves |= std::abs (pp.m[k] - bm[k]) > 1e-4f;
+            }
+        }
+        proc.setLocked (Snare, DrumProcessor::LockModel, true);
+        auto locked = proc.parts[Snare].params;
+        bool lockHeld = true;
+        for (int i = 0; i < 20; ++i) {
+            if (i % 2) proc.randomizeKit (1.f); else proc.randomizePart (Snare, 1.f);
+            proc.mutatePart (Snare, 0.5f); flushMessages();
+            lockHeld &= proc.parts[Snare].params.model == locked.model;
+            for (int k = 0; k < NumModelParams; ++k) lockHeld &= std::abs (proc.parts[Snare].params.m[k] - locked.m[k]) < 1e-5f;
+        }
+        proc.setLocked (Snare, DrumProcessor::LockModel, false);
+        bool ok = seen.size() >= 3 && envHeld && mutKeeps && mutMoves && lockHeld;
+        printf ("e2e model randomize: models seen %d env/vel held %d mutate keeps model %d moves knobs %d lock %d %s\n",
+                (int) seen.size(), (int) envHeld, (int) mutKeeps, (int) mutMoves, (int) lockHeld, ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
+    }
+    {
+        // state round-trip: model, knobs, reverse, output routing; INIT resets them
+        proc.setPartModel (Tom1, 2);
+        if (auto* q = proc.apvts.getParameter (DrumProcessor::modelParamID (Tom1, 1))) q->setValueNotifyingHost (0.77f);
+        if (auto* q = proc.apvts.getParameter ("p6_rev")) q->setValueNotifyingHost (1.f);
+        proc.parts[Tom1].output = 4;
+        flushMessages(); proc.pullApvtsToParts();
+        juce::MemoryBlock mb; proc.getStateInformation (mb);
+        proc.initKitNoUndo(); flushMessages(); proc.pullApvtsToParts();
+        bool cleared = proc.parts[Tom1].params.model == 0 && ! proc.parts[Tom1].params.reverse && proc.parts[Tom1].output.load() == 0;
+        proc.setStateInformation (mb.getData(), (int) mb.getSize()); flushMessages(); proc.pullApvtsToParts();
+        auto& pp = proc.parts[Tom1].params;
+        bool back = pp.model == 2 && std::abs (pp.m[1] - 0.77f) < 1e-3f && pp.reverse && proc.parts[Tom1].output.load() == 4;
+        // kit preset round-trip too (toVT/fromVT)
+        auto vt = pp.toVT(); PartParams q2; q2.fromVT (vt);
+        bool kitRt = q2.model == 2 && std::abs (q2.m[1] - 0.77f) < 1e-3f && q2.reverse;
+        bool ok = cleared && back && kitRt;
+        printf ("e2e model/reverse/out state: init clears %d restore %d kit vt %d %s\n", (int) cleared, (int) back, (int) kitRt, ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
+        proc.initKitNoUndo(); flushMessages();
+    }
+    {
+        // REVERSE: the energy moves to the end (works for CLASSIC and a model)
+        bool ok = true;
+        for (int model : { 0, 1 }) {
+            proc.setPartModel (Snare, model);
+            if (auto* q = proc.apvts.getParameter ("p1_rev")) q->setValueNotifyingHost (0.f);
+            flushMessages(); silenceProc (proc);
+            auto fw = renderProc (proc, Snare, 44100);
+            if (auto* q = proc.apvts.getParameter ("p1_rev")) q->setValueNotifyingHost (1.f);
+            flushMessages(); proc.pullApvtsToParts(); proc.updateReverseCaches(); silenceProc (proc);
+            auto rv = renderProc (proc, Snare, 44100);
+            auto centroid = [] (const juce::AudioBuffer<float>& b) {
+                double e = 0, et = 0;
+                for (int i = 0; i < b.getNumSamples(); ++i) { double v = b.getSample (0, i); e += v * v; et += v * v * i; }
+                return e > 0 ? et / e / 44100.0 : -1.0;
+            };
+            int pkF = 0, pkR = 0; float mf = 0, mr = 0;
+            for (int i = 0; i < 44100; ++i) {
+                if (std::abs (fw.getSample (0, i)) > mf) { mf = std::abs (fw.getSample (0, i)); pkF = i; }
+                if (std::abs (rv.getSample (0, i)) > mr) { mr = std::abs (rv.getSample (0, i)); pkR = i; }
+            }
+            double cf = centroid (fw), cr = centroid (rv);
+            bool good = mr > 1e-3f && pkR > pkF + 2000 && cr > cf;
+            printf ("  reverse model %d: peak %d -> %d samples, centroid %.3f -> %.3f s\n", model, pkF, pkR, cf, cr);
+            ok &= good;
+        }
+        if (auto* q = proc.apvts.getParameter ("p1_rev")) q->setValueNotifyingHost (0.f);
+        proc.setPartModel (Snare, 0); flushMessages();
+        printf ("e2e reverse plays backwards %s\n", ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
+    }
+    {
+        // MULTI-OUT: kick on OUT 3 lands on that bus only; with the bus disabled it falls back to MAIN
+        auto layout = proc.getBusesLayout();
+        for (int i = 1; i < layout.outputBuses.size(); ++i) layout.outputBuses.getReference (i) = juce::AudioChannelSet::stereo();
+        proc.releaseResources();
+        bool set = proc.setBusesLayout (layout);
+        proc.prepareToPlay (44100.0, 512);
+        proc.parts[Kick].output = 2;
+        silenceProc (proc);
+        auto b = renderProc (proc, Kick, 22050);
+        float mainPk = chanPeak (b, 0, 1), auxPk = chanPeak (b, 4, 5), otherPk = chanPeak (b, 2, 3) + chanPeak (b, 6, b.getNumChannels() - 1);
+        bool routed = set && b.getNumChannels() == 2 * (1 + DrumProcessor::NumAuxOuts) && auxPk > 1e-3f && mainPk < 1e-5f && otherPk < 1e-5f;
+        auto layout2 = proc.getBusesLayout();
+        for (int i = 1; i < layout2.outputBuses.size(); ++i) layout2.outputBuses.getReference (i) = juce::AudioChannelSet::disabled();
+        proc.releaseResources();
+        proc.setBusesLayout (layout2);
+        proc.prepareToPlay (44100.0, 512);
+        silenceProc (proc);
+        auto b2 = renderProc (proc, Kick, 22050);
+        bool fallback = b2.getNumChannels() == 2 && chanPeak (b2, 0, 1) > 1e-3f;
+        proc.parts[Kick].output = 0;
+        bool ok = routed && fallback;
+        printf ("e2e multi-out: aux %.3f main %.6f others %.6f routed %d, disabled-bus fallback %d %s\n",
+                auxPk, mainPk, otherPk, (int) routed, (int) fallback, ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
+    }
+    {
+        // model kits load from their data files: models + REVERSE restored, reversed parts play backwards on the first hit
+        // read the repo's freshly minted data files, never an installed copy
+        auto repo = juce::File (__FILE__).getParentDirectory();
+        auto shadow = juce::File::createTempFile ("factory_shadow"); shadow.createDirectory();
+        setFactoryDirsForTest (repo.getChildFile ("Factory"), shadow);
+        rescanFactoryPresets();
+        proc.loadKit (74);
+        flushMessages();
+        bool loaded = proc.kitName == "Mirror Room" && proc.parts[Snare].params.model == 1 && proc.parts[Crash].params.model == 1
+                   && proc.parts[Crash].params.reverse && ! proc.parts[Kick].params.reverse;
+        auto b = renderProc (proc, Crash, 44100 * 3);
+        int pk = 0; float mx = 0;
+        for (int i = 0; i < b.getNumSamples(); ++i) if (std::abs (b.getSample (0, i)) > mx) { mx = std::abs (b.getSample (0, i)); pk = i; }
+        bool firstHitReversed = mx > 1e-3f && pk > 44100;   // a forward crash peaks in the first ms
+        int modelParts = 0;
+        for (int k = 65; k <= numFactoryKits(); ++k) {
+            proc.loadKit (k);
+            for (int p = 0; p < NumParts; ++p) modelParts += proc.parts[p].params.model > 0 ? 1 : 0;
+        }
+        bool ok = loaded && firstHitReversed && numFactoryKits() == 80 && modelParts > 100;
+        printf ("e2e model kits: Mirror Room loaded %d, first reversed crash peaks at %.2f s, %d model parts in kits 65-80 %s\n",
+                (int) loaded, pk / 44100.0, modelParts, ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
     }
 
     printf (fails == 0 ? "ALL E2E TESTS PASSED\n" : "FAILURES: %d\n", fails);
