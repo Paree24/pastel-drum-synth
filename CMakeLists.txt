@@ -63,14 +63,24 @@ add_executable(SmokeTest TestSmoke.cpp Source/dsp/DrumEngine.cpp Source/dsp/Effe
 target_include_directories(SmokeTest PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(SmokeTest PRIVATE juce::juce_dsp juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
-    juce::juce_recommended_config_flags curl)
+    juce::juce_recommended_config_flags)
+target_compile_definitions(SmokeTest PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+add_dependencies(SmokeTest ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # PresetDump: recipe -> Factory/*.xml data-file generator (never shipped)
 add_executable(PresetDump PresetDump.cpp Source/dsp/DrumEngine.cpp Source/dsp/Effects.cpp Source/Presets.cpp)
 target_include_directories(PresetDump PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(PresetDump PRIVATE juce::juce_dsp juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
-    juce::juce_recommended_config_flags curl)
+    juce::juce_recommended_config_flags)
+target_compile_definitions(PresetDump PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+add_dependencies(PresetDump ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # E2ETest: real processor + APVTS path headless (no editor created)
 add_executable(E2ETest TestE2E.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
@@ -87,6 +97,7 @@ target_compile_definitions(E2ETest PRIVATE
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_MODAL_LOOPS_PERMITTED=1
 )
+add_dependencies(E2ETest ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # Ship factory presets inside the VST3 bundle + next to the standalone
 add_custom_target(PastelFactory ALL
@@ -111,7 +122,7 @@ target_include_directories(KitProbe PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(KitProbe PRIVATE juce::juce_audio_processors juce::juce_audio_formats juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
-    juce::juce_recommended_config_flags curl)
+    juce::juce_recommended_config_flags)
 target_compile_definitions(KitProbe PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -119,6 +130,7 @@ target_compile_definitions(KitProbe PRIVATE
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_MODAL_LOOPS_PERMITTED=1
 )
+add_dependencies(KitProbe ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # UiShot: opens the real editor offscreen and writes PNG snapshots of every
 # view/tab (dev tool, never shipped)
@@ -128,7 +140,7 @@ target_include_directories(UiShot PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(UiShot PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
-    juce::juce_recommended_config_flags curl)
+    juce::juce_recommended_config_flags)
 target_compile_definitions(UiShot PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -136,3 +148,4 @@ target_compile_definitions(UiShot PRIVATE
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_MODAL_LOOPS_PERMITTED=1
 )
+add_dependencies(UiShot ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
