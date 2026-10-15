@@ -42,6 +42,7 @@ static double renderKickHF (DrumProcessor& proc, int waveSel) {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit; // required before any MessageManager/editor use (segfaults on macOS without it)
+    setvbuf (stdout, nullptr, _IONBF, 0); // unbuffered: CI shows progress even if we crash later
     int fails = 0;
     DrumProcessor proc;
     proc.prepareToPlay (44100.0, 512);

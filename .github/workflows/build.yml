@@ -86,6 +86,26 @@ jobs:
         if: runner.os == 'macOS'
         run: ./build/E2ETest
 
+      - name: Dump macOS crash report (E2ETest)
+        if: failure() && runner.os == 'macOS'
+        run: |
+          f=$(ls -t ~/Library/Logs/DiagnosticReports/E2ETest*.ips 2>/dev/null | head -1)
+          if [ -z "$f" ]; then echo "no E2ETest crash report found"; ls -t ~/Library/Logs/DiagnosticReports/ | head; exit 0; fi
+          echo "report: $f"
+          python3 - "$f" <<'EOF'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          exc = d.get('exception', {})
+          print('exception:', exc.get('type'), exc.get('codes'))
+          print('fault:', d.get('faultingThread'), 'crashed:', d.get('crashedThread'))
+          tid = d.get('faultingThread', d.get('crashedThread'))
+          for t in d.get('threads', []):
+              if t.get('id') == tid or (tid is None and t.get('triggered')):
+                  for f in t.get('frames', [])[:30]:
+                      print(f"  {f.get('image','?')} {f.get('symbol','?')} +{f.get('imageOffset',0)}")
+                  break
+          EOF
+
       - name: Self-test E2ETest (Windows)
         if: runner.os == 'Windows'
         run: build\E2ETest.exe

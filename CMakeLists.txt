@@ -89,7 +89,7 @@ target_include_directories(E2ETest PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(E2ETest PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
-    juce::juce_recommended_config_flags curl)
+    juce::juce_recommended_config_flags)
 target_compile_definitions(E2ETest PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
