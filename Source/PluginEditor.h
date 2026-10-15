@@ -109,6 +109,7 @@ private:
     std::unique_ptr<PresetBrowser> browser;
     juce::ComboBox scopeBox; // Part / Kit for rand/mut
     juce::Slider masterDial; juce::Label masterLab, presetLab, kitLab;
+    juce::Slider masterFader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox }; // before the attachments: they must die first
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterDialAtt, masterFaderAtt;
     juce::TextButton limitB { "LIMITER" };
 
@@ -158,7 +159,6 @@ private:
     juce::TextButton partFxPower { "ON" }, globPower { "ON" }, partFxLock { "LOCK" };
 
     juce::Label outTitle { {}, "OUTPUT" };
-    juce::Slider masterFader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
 
     void rebuildSynthPanel();
     void refreshFxRows();
