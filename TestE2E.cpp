@@ -594,16 +594,42 @@ int main() {
                 else mutMoves |= std::abs (pp.m[k] - bm[k]) > 1e-4f;
             }
         }
+        // MODEL lock: the engine stays, its unlocked knobs still move
         proc.setLocked (Snare, DrumProcessor::LockModel, true);
         auto locked = proc.parts[Snare].params;
-        bool lockHeld = true;
+        bool lockHeld = true, othersMove = false;
         for (int i = 0; i < 20; ++i) {
             if (i % 2) proc.randomizeKit (1.f); else proc.randomizePart (Snare, 1.f);
-            proc.mutatePart (Snare, 0.5f); flushMessages();
+            flushMessages();
             lockHeld &= proc.parts[Snare].params.model == locked.model;
-            for (int k = 0; k < NumModelParams; ++k) lockHeld &= std::abs (proc.parts[Snare].params.m[k] - locked.m[k]) < 1e-5f;
+            for (int k = 0; k < NumModelParams; ++k) othersMove |= std::abs (proc.parts[Snare].params.m[k] - locked.m[k]) > 1e-4f;
         }
         proc.setLocked (Snare, DrumProcessor::LockModel, false);
+        // one knob lock: only that knob holds (and the model with it); the others keep moving
+        proc.setPartModel (Snare, 1);
+        const int kTune = 0, kNoise = 5;   // LAYERED: TUNE, NOISE
+        proc.setLocked (Snare, DrumProcessor::modelKnobLock (kTune), true);
+        float tune0 = proc.parts[Snare].params.m[kTune];
+        bool knobHeld = true, noiseMoved = false;
+        for (int i = 0; i < 20; ++i) {
+            float n0 = proc.parts[Snare].params.m[kNoise];
+            switch (i % 3) { case 0: proc.randomizePart (Snare, 1.f); break; case 1: proc.randomizeKit (1.f); break; default: proc.mutatePart (Snare, 0.5f); }
+            flushMessages();
+            knobHeld &= proc.parts[Snare].params.model == 1 && std::abs (proc.parts[Snare].params.m[kTune] - tune0) < 1e-6f;
+            noiseMoved |= std::abs (proc.parts[Snare].params.m[kNoise] - n0) > 1e-4f;
+        }
+        bool onlyOne = true;
+        for (int k = 0; k < NumModelParams; ++k) if (k != kTune) onlyOne &= ! proc.isLocked (Snare, DrumProcessor::modelKnobLock (k));
+        // changing the model drops knob locks; knob locks survive a session round-trip
+        juce::MemoryBlock mb; proc.getStateInformation (mb);
+        proc.setLocked (Snare, DrumProcessor::modelKnobLock (kTune), false);
+        proc.setStateInformation (mb.getData(), (int) mb.getSize());
+        bool persisted = proc.isLocked (Snare, DrumProcessor::modelKnobLock (kTune));
+        proc.setPartModel (Snare, 2);
+        bool cleared = ! proc.anyModelKnobLocked (Snare);
+        lockHeld &= othersMove && knobHeld && noiseMoved && onlyOne && persisted && cleared;
+        printf ("  locks: model-lock knobs move %d, knob-lock held %d others move %d only-one %d persisted %d cleared-on-model-change %d\n",
+                (int) othersMove, (int) knobHeld, (int) noiseMoved, (int) onlyOne, (int) persisted, (int) cleared);
         bool ok = seen.size() >= 3 && envHeld && mutKeeps && mutMoves && lockHeld;
         printf ("e2e model randomize: models seen %d env/vel held %d mutate keeps model %d moves knobs %d lock %d %s\n",
                 (int) seen.size(), (int) envHeld, (int) mutKeeps, (int) mutMoves, (int) lockHeld, ok ? "OK" : "FAIL");
@@ -710,6 +736,52 @@ int main() {
         bool ok = loaded && firstHitReversed && numFactoryKits() == 80 && modelParts > 100;
         printf ("e2e model kits: Mirror Room loaded %d, first reversed crash peaks at %.2f s, %d model parts in kits 65-80 %s\n",
                 (int) loaded, pk / 44100.0, modelParts, ok ? "OK" : "FAIL");
+        if (! ok) ++fails;
+    }
+    {
+        // editor right-clicks: knob -> that knob + the model; MODEL label -> the model only
+        for (int p = 0; p < NumParts; ++p) for (int k = 0; k < DrumProcessor::NumLocks; ++k) proc.setLocked (p, k, false);
+        proc.setPartModel (Snare, 1);
+        proc.selectedPart = Snare;
+        std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
+        ed->setVisible (true);
+        flushMessages();
+        auto findKnob = [&] (const juce::String& label) -> Knob* {
+            Knob* hit = nullptr;
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c) {
+                if (auto* kb = dynamic_cast<Knob*> (&c)) if (kb->isVisible() && kb->lab.getText() == label) hit = kb;
+                for (auto* ch : c.getChildren()) walk (*ch);
+            };
+            walk (*ed); return hit;
+        };
+        auto findLabel = [&] (const juce::String& text) -> LockLabel* {
+            LockLabel* hit = nullptr;
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c) {
+                if (auto* l = dynamic_cast<LockLabel*> (&c)) if (l->getText() == text) hit = l;
+                for (auto* ch : c.getChildren()) walk (*ch);
+            };
+            walk (*ed); return hit;
+        };
+        auto lockedKnobs = [&] (int part) { int n = 0; for (int k = 0; k < NumModelParams; ++k) n += proc.isLocked (part, DrumProcessor::modelKnobLock (k)) ? 1 : 0; return n; };
+        bool ok = true;
+        if (auto* kb = findKnob ("NOISE"); kb && kb->s.onRightClick) {
+            kb->s.onRightClick();
+            ok &= kb->locked && proc.isLocked (Snare, DrumProcessor::modelKnobLock (5)) && lockedKnobs (Snare) == 1
+               && proc.isLocked (Snare, DrumProcessor::LockModel);
+            int othersShownLocked = 0;
+            for (auto* other : { "TUNE", "BODY", "SNAP" }) if (auto* o = findKnob (other)) othersShownLocked += o->locked ? 1 : 0;
+            ok &= othersShownLocked == 0;
+        } else ok = false;
+        proc.setLocked (Snare, DrumProcessor::modelKnobLock (5), false);
+        proc.setLocked (Snare, DrumProcessor::LockModel, false);
+        ed->resized(); proc.stateVersion++; flushMessages();
+        if (auto* ml = findLabel ("MODEL"); ml && ml->onRightClick) {
+            ml->onRightClick();
+            ok &= proc.isLocked (Snare, DrumProcessor::LockModel) && lockedKnobs (Snare) == 0;
+        } else ok = false;
+        ed.reset();
+        for (int k = 0; k < DrumProcessor::NumLocks; ++k) proc.setLocked (Snare, k, false);
+        printf ("e2e editor lock clicks: knob locks itself + model only, MODEL locks model only %s\n", ok ? "OK" : "FAIL");
         if (! ok) ++fails;
     }
 
