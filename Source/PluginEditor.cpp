@@ -612,10 +612,9 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
         if (m >= 0 && m != shownModel()) { proc.setPartModel (sel(), m); rebuildSynthPanel(); }
     };
     modelBox.setTooltip ("Synthesis engine for this part. CLASSIC = the original voice");
-    modelLab.onRightClick = [this] {
+    modelLab.onRightClick = [this] {   // locks the engine choice only; knobs lock one by one
         proc.toggleLock (sel(), DrumProcessor::LockModel);
         modelLab.locked = proc.isLocked (sel(), DrumProcessor::LockModel); modelLab.repaint();
-        for (auto& k : synthKnobs) if (k->getProperties()["model"]) { k->locked = modelLab.locked; k->repaint(); }
     };
     revB.setClickingTogglesState (true);
     revB.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffa78bfa));
@@ -788,9 +787,17 @@ void DrumEditor::rebuildSynthPanel() {
                 kb->s.onValueChange = [kbp = kb.get(), mp] {
                     kbp->val.setText (modelFormat (mp, modelCook (mp, (float) kbp->s.getValue())), juce::dontSendNotification);
                 };
-                kb->getProperties().set ("model", true);
-                kb->locked = proc.isLocked (p, DrumProcessor::LockModel);
-                kb->s.onRightClick = [this] { modelLab.onRightClick(); };   // one lock covers model + knobs
+                const int key = DrumProcessor::modelKnobLock (k);
+                kb->locked = proc.isLocked (p, key);
+                kb->s.onRightClick = [this, p, key, kbp = kb.get()] {
+                    proc.toggleLock (p, key);
+                    kbp->locked = proc.isLocked (p, key);
+                    kbp->repaint();
+                    if (kbp->locked) {   // a knob lock holds the model too (its knob means something else in another model)
+                        proc.setLocked (p, DrumProcessor::LockModel, true);
+                        modelLab.locked = true; modelLab.repaint();
+                    }
+                };
                 kb->s.onValueChange();
                 synthPanel.addAndMakeVisible (*kb);
                 synthKnobs.push_back (std::move (kb));

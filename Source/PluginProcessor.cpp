@@ -654,7 +654,10 @@ void DrumProcessor::setPartModel (int part, int model) {
     part = juce::jlimit (0, NumParts - 1, part);
     pushUndo();
     auto& pp = parts[part].params;
-    pp.model = juce::jlimit (0, numModels (part) - 1, model);
+    int newModel = juce::jlimit (0, numModels (part) - 1, model);
+    if (newModel != pp.model)   // knob locks belong to the old model's knobs
+        for (int k = 0; k < NumModelParams; ++k) setLocked (part, modelKnobLock (k), false);
+    pp.model = newModel;
     modelDefaults01 (part, pp.model, pp.m);
     if (auto* md = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("p" + juce::String (part) + "_model")))
         md->setValueNotifyingHost (md->convertTo0to1 ((float) pp.model));
@@ -667,15 +670,15 @@ void DrumProcessor::setPartModel (int part, int model) {
 // RANDOMIZE may switch the engine model (unless locked); knobs move around the model's defaults.
 // Envelope knobs and VEL>AMP (dynamics) are never randomized; switching model loads their defaults.
 void DrumProcessor::randomizeModel (int part, float intensity) {
-    if (isLocked (part, LockModel)) return;
     auto& pp = parts[part].params;
-    if (liveRng.nextFloat() < 0.35f * intensity + 0.1f) {
+    // a locked knob keeps its model too (knob k means something else in another model)
+    if (! isLocked (part, LockModel) && ! anyModelKnobLocked (part) && liveRng.nextFloat() < 0.35f * intensity + 0.1f) {
         int model = liveRng.nextInt (numModels (part));
         if (model != pp.model) { pp.model = model; modelDefaults01 (part, model, pp.m); }
     }
     if (auto* md = modelDef (part, pp.model))
         for (int k = 0; k < md->nparams; ++k) {
-            if (modelParamIsEnvelope (md->p[k])) continue;
+            if (modelParamIsEnvelope (md->p[k]) || isLocked (part, modelKnobLock (k))) continue;
             float def = modelUncook (md->p[k], md->p[k].def);
             float wild = def + (liveRng.nextFloat() * 2.f - 1.f) * 0.35f * intensity;
             pp.m[k] = juce::jlimit (0.f, 1.f, pp.m[k] * (1.f - intensity) + wild * intensity);
@@ -685,10 +688,10 @@ void DrumProcessor::randomizeModel (int part, float intensity) {
 // MUTATE never changes the model, only nudges its knobs
 void DrumProcessor::mutateModel (int part, float amount) {
     auto& pp = parts[part].params;
-    if (pp.model <= 0 || isLocked (part, LockModel)) return;
+    if (pp.model <= 0) return;
     if (auto* md = modelDef (part, pp.model))
         for (int k = 0; k < md->nparams; ++k)
-            if (! modelParamIsEnvelope (md->p[k])) pp.m[k] = juce::jlimit (0.f, 1.f, pp.m[k] + (liveRng.nextFloat() * 2.f - 1.f) * amount * 0.25f);
+            if (! modelParamIsEnvelope (md->p[k]) && ! isLocked (part, modelKnobLock (k))) pp.m[k] = juce::jlimit (0.f, 1.f, pp.m[k] + (liveRng.nextFloat() * 2.f - 1.f) * amount * 0.25f);
 }
 
 // ---- REVERSE ----

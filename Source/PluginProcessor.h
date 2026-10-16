@@ -95,7 +95,14 @@ public:
     // sends and the whole FX chain. Locked items are never touched by
     // RANDOMIZE / MUTATE / KIT RND. Session state: saved with the DAW
     // project, kept across kit changes (not stored in kit files).
-    enum { LockWave = 20, LockNoise, LockSendRev, LockSendDly, LockFx, LockModel, NumLocks };
+    // LockModel = the engine choice only; each model knob has its own lock (LockModelKnob0 + k)
+    enum { LockWave = 20, LockNoise, LockSendRev, LockSendDly, LockFx, LockModel, LockModelKnob0,
+           NumLocks = LockModelKnob0 + NumModelParams };
+    static int modelKnobLock (int k) { return LockModelKnob0 + juce::jlimit (0, NumModelParams - 1, k); }
+    bool anyModelKnobLocked (int part) const {
+        for (int k = 0; k < NumModelParams; ++k) if (isLocked (part, modelKnobLock (k))) return true;
+        return false;
+    }
     bool isLocked (int part, int key) const { return locks[juce::jlimit (0, NumParts - 1, part)][juce::jlimit (0, NumLocks - 1, key)]; }
     void setLocked (int part, int key, bool on) { locks[juce::jlimit (0, NumParts - 1, part)][juce::jlimit (0, NumLocks - 1, key)] = on; }
     void toggleLock (int part, int key) { setLocked (part, key, ! isLocked (part, key)); }
