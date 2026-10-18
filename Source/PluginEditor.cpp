@@ -977,7 +977,7 @@ void DrumEditor::rebuildSynthPanel() {
             synthKnobs.push_back (std::move (kb));
         }
         // DLY SYNC: FREE, then the shared tempo divisions (host tempo, 120 BPM without one)
-        constexpr int steps = TempoSync::NumDivisions;
+        static constexpr int steps = TempoSync::NumDivisions;   // static: usable in the lambdas below without a capture (MSVC)
         auto sk = std::make_unique<Knob> ("DLY SYNC", partColour (p));
         sk->s.setColour (juce::Slider::rotarySliderFillColourId, partColour (p));
         sk->setManual ((float) (proc.dlySync.load() + 1) / steps, [pr, timeK] (float v) {
