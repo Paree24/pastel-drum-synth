@@ -78,7 +78,9 @@ int main() {
     juce::ScopedJuceInitialiser_GUI juceInit; // required before any MessageManager/editor use (segfaults on macOS without it)
     setvbuf (stdout, nullptr, _IONBF, 0); // unbuffered: CI shows progress even if we crash later
     int fails = 0;
-    DrumProcessor proc;
+    // on the heap: the processor is ~0.5 MB and Windows threads get a 1 MB stack
+    auto procHolder = std::make_unique<DrumProcessor>();
+    DrumProcessor& proc = *procHolder;
     proc.prepareToPlay (44100.0, 512);
 
     // float param plumbing sanity (pitch amount follows UI value)
@@ -828,8 +830,8 @@ int main() {
         bool back = proc.kitName == name2 && proc.redoStack.size() == 1;
         proc.redo();
         bool fwd = proc.kitName == name3 && proc.redoStack.empty();
-        DrumProcessor fresh;
-        check (one && none && back && fwd && fresh.undoStack.empty(), "undo: 1 step per kit load, 0 for project/startup, redo");
+        auto fresh = std::make_unique<DrumProcessor>();
+        check (one && none && back && fwd && fresh->undoStack.empty(), "undo: 1 step per kit load, 0 for project/startup, redo");
     }
     {   // a knob gesture is one PARAM undo step, redo re-applies it
         proc.undoStack.clear(); proc.redoStack.clear();
