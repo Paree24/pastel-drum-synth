@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include "Visuals.h"
 
 namespace mds {
 
@@ -52,6 +53,22 @@ struct Knob : juce::Component {
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
 };
 
+class DrumEditor;
+
+// the four macros of the selected part (MACROS tab)
+struct MacroPanel : juce::Component {
+    explicit MacroPanel (DrumEditor& e);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void refresh();
+    void showTargetMenu (int k);
+    DrumEditor& ed;
+    std::unique_ptr<Knob> knobs[DrumProcessor::NumMacros];
+    juce::Label names[DrumProcessor::NumMacros];
+    juce::Rectangle<int> targetRects[DrumProcessor::NumMacros];
+};
+
 // 12-pad selector card
 struct PartCard : juce::Component {
     PartCard (int idx, DrumProcessor& pr);
@@ -98,14 +115,18 @@ public:
     FxChainView* partFxViewForTest() { return partFxView.get(); }
     int selectedPartForTest() const { return proc.selectedPart.load(); }
 
-private:
     DrumProcessor& proc;
+    int sel() const { return proc.selectedPart.load(); }
+    void refreshAll() { rebuildSynthPanel(); refreshFxRows(); }
+
+private:
     PastelLNF lnf;
+    juce::TooltipWindow tooltips { this, 700 };   // child of the editor: setTooltip() texts show up in every host
 
     // header
     juce::TextButton presetBtn { "Init" };
     juce::TextButton prevB { "<" }, nextB { ">" }, randPartB { "RANDOMIZE" }, mutPartB { "MUTATE" },
-                     randKitB { "KIT RND" }, undoB { "UNDO" }, initB { "INIT" };
+                     randKitB { "KIT RND" }, undoB { "UNDO" }, redoB { "REDO" }, initB { "INIT" };
     std::unique_ptr<PresetBrowser> browser;
     juce::ComboBox scopeBox; // Part / Kit for rand/mut
     juce::Slider masterDial; juce::Label masterLab, presetLab, kitLab;
@@ -118,33 +139,18 @@ private:
     std::vector<std::unique_ptr<PartCard>> cards;
 
     // scope + analyzer (follow selected part)
-    struct ScopeView : juce::Component {
-        ScopeView (DrumProcessor& p) : proc (p) {}
-        void paint (juce::Graphics&) override;
-        DrumProcessor& proc;
-    };
-    struct AnalyzerView : juce::Component {
-        AnalyzerView (DrumProcessor& p) : proc (p) {}
-        void paint (juce::Graphics&) override;
-        DrumProcessor& proc;
-        juce::dsp::FFT fft { 11 };
-        float work[4096] = {};
-    };
-    ScopeView scopeView { proc };
-    AnalyzerView analyzerView { proc };
-    struct MeterComp : juce::Component {
-        MeterComp (DrumProcessor& p) : proc (p) {}
-        void paint (juce::Graphics&) override;
-        DrumProcessor& proc;
-    };
-    MeterComp meterComp { proc };
+    ScopeSource selectedScope() const;
+    ScopeView scopeView { [this] { return selectedScope(); } };
+    SpectrumView analyzerView { [this] { return selectedScope(); } };
+    MeterComp meterComp { [this] { return proc.outLevel.load(); } };
     // main view tabs: synth engine | per-part FX | global FX
     juce::TextButton viewSynth { "SYNTH" }, viewPartFx { "PART FX" }, viewGlobFx { "GLOBAL FX" };
     int mainView = 0;
     juce::Rectangle<int> footerRect;
     // synth panel
     juce::Component synthPanel, fxPanel, globalPanel, outPanel, footPanel;
-    juce::TextButton tabSynth { "SYNTH" }, tabAmp { "AMP" }, tabPitch { "PITCH" }, tabSend { "FX SEND" };
+    juce::TextButton tabSynth { "SYNTH" }, tabAmp { "AMP" }, tabPitch { "PITCH" }, tabSend { "FX SEND" }, tabMacro { "MACROS" };
+    std::unique_ptr<MacroPanel> macroPanel;
     int tab = 0;
     juce::Label partTitle;
     std::vector<std::unique_ptr<Knob>> synthKnobs;
@@ -152,6 +158,12 @@ private:
     LockLabel waveLab { {}, "WAVE" }, noiseLab { {}, "NOISE" };
     juce::Label lockHint { {}, "RIGHT-CLICK = LOCK" };
     juce::TextButton trigB { "TRIGGER" };
+    // engine model / reverse / output routing for the selected part
+    juce::ComboBox modelBox, outBox, chokeBox;
+    LockLabel modelLab { {}, "MODEL" };
+    juce::Label outLab { {}, "OUT" }, chokeLab { {}, "CHOKE" };
+    juce::TextButton revB { "REVERSE" };
+    int shownModel() const;
 
     std::unique_ptr<FxChainView> partFxView, globFxView;
     juce::Label fxTitle { {}, "EFFECTS CHAIN" }, fxHint { {}, "USE < > TO REORDER" };
@@ -161,10 +173,11 @@ private:
     juce::Label outTitle { {}, "OUTPUT" };
 
     void rebuildSynthPanel();
+    void applyPartAccent (int part);
     void refreshFxRows();
     void layoutMainView(); // main tab visibility
+public:
     void selectPart (int p);
-    int sel() const { return proc.selectedPart.load(); }
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DrumEditor)
 };
 

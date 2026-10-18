@@ -11,7 +11,7 @@ bool loadPresetFile (DrumProcessor& proc, const juce::File& file) {
     if (xml == nullptr) return false;
     auto vt = juce::ValueTree::fromXml (*xml);
     if (! vt.isValid() || ! vt.hasType ("DRUMSYNTH")) return false;
-    proc.loadFullStateVT (vt);
+    proc.loadFullStateVT (vt, false);   // no undo step: callers push one
     return true;
 }
 
@@ -55,11 +55,15 @@ bool saveUserPreset (const juce::String& name, DrumProcessor& proc) {
     auto file = dir.getChildFile (clean + ".xml");
     if (file.exists() && ! file.deleteFile()) return false;
     proc.kitName = clean;
+    proc.currentKit = -1; // now a user kit, not a factory slot
     return savePresetFile (proc, file);
 }
 
 bool loadUserPreset (const juce::File& file, DrumProcessor& proc) {
-    if (! loadPresetFile (proc, file)) return false;
+    auto xml = juce::parseXML (file);
+    auto vt = xml != nullptr ? juce::ValueTree::fromXml (*xml) : juce::ValueTree();
+    if (! vt.isValid() || ! vt.hasType ("DRUMSYNTH")) return false;   // nothing changed: undo + redo history stay
+    proc.loadFullStateVT (vt, true);   // one undo step
     proc.currentKit = -1; // user sound, not a factory slot
     proc.kitName = file.getFileNameWithoutExtension();
     proc.applyKitToApvts(); proc.pullApvtsToParts();

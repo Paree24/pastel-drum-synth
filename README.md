@@ -10,8 +10,49 @@ per-part synth voices, per-part FX chains plus a global chain (EQ,
 compressor, transient shaper, distortion, filter, delay, reverb), shared
 send reverb/delay returns, part mixer (level, pan, mute/solo, choke groups),
 part/kit randomization and identity-preserving mutation with locks and
-undo, 64 factory kits in editable data files (never compiled in), user kit
+undo, 80 factory kits in editable data files (never compiled in), user kit
 save/load, and a full preset browser with search.
+
+### Engine models, REVERSE and multi-out
+
+Every part has a **MODEL** selector next to its name. **CLASSIC** is the
+original voice, untouched (factory kits render bit-identically). The other
+models are real-time synthesis engines, each with its own knobs on the SYNTH
+tab:
+
+| Part | Models |
+|---|---|
+| Kick | PUNCH, RUMBLE, BOOM |
+| Snare | LAYERED, SWEPT, DRUM MACHINE, CLAP |
+| Closed / open hat | FM METAL, SHAKER, TAMBOURINE |
+| Ride | CLOUD, BELL |
+| Crash | CLOUD, CLOUD DARK |
+| Toms | MEMBRANE, CONGA |
+| Membrane perc | CONGA, BONGO, RIM, WOOD, GLASS, SNAP, CLAP |
+| Metallic perc | CLANG, COWBELL, AGOGO, TAMBOURINE, GLASS |
+| SFX | RISER, IMPACT, LASER, SIREN, SUB DROP, VOX, ZAP, NOISE HIT, AIR HORN, BOOM |
+
+Factory kits 65–80 are built on the models. Between them they use every
+model, and some include REVERSE parts (Mirror Room, Ghost Swell). Choosing a
+model loads its default settings (undoable). The defaults peak at
+about the same level as the part's CLASSIC voice. With a model selected,
+the AMP tab keeps only PAN (the model shapes its own envelope) and the
+PITCH tab, WAVE and NOISE are hidden. Part TUNE, LEVEL, FX chains and sends
+work with every model.
+
+- **RANDOMIZE** (part or kit) may switch the model. **MUTATE** never does;
+  it only nudges the current model's knobs. Neither one touches a model's
+  envelope knobs (DECAY, LENGTH, TAIL, ATTACK, HOLD, GATE) or VEL>AMP.
+  Right-click MODEL (or any model knob) to lock the model and its knobs.
+- **REVERSE** plays the part backwards. It works with every model and with
+  CLASSIC. The reversed hit is re-rendered in the background whenever the
+  sound changes.
+- **OUT** routes the part to MAIN or to one of 12 extra stereo outputs
+  (OUT 2 to OUT 13). Enable the extra outputs in your host. A part routed to
+  a disabled output plays on MAIN. An extra output carries the part after
+  its own FX chain and the master level. It skips the global chain and the
+  limiter. The part's reverb and delay sends still feed the shared returns,
+  which play on MAIN.
 
 ## License
 
@@ -122,8 +163,8 @@ install bundle.
 
 - `Source/` — plugin DSP, UI, preset backend
   (`PluginProcessor.*`, `PluginEditor.*`, `PresetBrowser.*`, `Presets.*`,
-  `PresetFiles.*`, `dsp/DrumEngine.*`, `dsp/Effects.*`)
-- `Factory/*.xml` — the 64 factory kits (data, editable by hand)
+  `PresetFiles.*`, `dsp/DrumEngine.*`, `dsp/Models.*`, `dsp/Effects.*`)
+- `Factory/*.xml` — the 80 factory kits (data, editable by hand; 65–80 use the engine models)
 - `TestSmoke.cpp` — DSP regression suite (voices, noise, FX, kit recipes)
 - `TestE2E.cpp` — processor + APVTS/UI-path suite (plumbing, chains,
   chaos ops, sends, locks)
@@ -131,5 +172,9 @@ install bundle.
   prints per-part metrics + writes audition WAVs (dev tool, never shipped)
 - `PresetDump.cpp` — recipe → `Factory/*.xml` data-file generator
   (never shipped)
+- `ModelProbe.cpp` — renders every engine model to WAV and prints peak /
+  length / RMS (dev tool, never shipped)
+- `RegressRender.cpp` — hashes the 64 classic kits × 12 parts; diff against a saved
+  run to prove CLASSIC output is unchanged (dev tool, never shipped)
 - `UiShot.cpp` — opens the real editor offscreen and writes PNG snapshots
   of every view/tab (dev tool, never shipped)

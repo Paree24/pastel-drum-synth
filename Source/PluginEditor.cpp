@@ -165,17 +165,44 @@ void PartCard::paint (juce::Graphics& g) {
     g.setColour (juce::Colour (0xff6a6a78));
     g.setFont (juce::Font (9.f));
     g.drawText (noteName (proc.parts[idx].midiNote), getWidth() - 42, 6, 38, 14, juce::Justification::centredRight);
+    // engine model + REVERSE badge (blank for the CLASSIC voice)
+    juce::String sub;
+    if (auto* md = modelDef (idx, proc.parts[idx].params.model)) sub = md->name;
+    if (proc.parts[idx].params.reverse) sub = sub.isEmpty() ? "REV" : sub + " / REV";
+    if (sub.isNotEmpty()) {
+        g.setColour (partColour (idx).withAlpha (0.75f));
+        g.setFont (juce::Font (9.f, juce::Font::bold));
+        g.drawText (sub, 4, 20, getWidth() - 8, 11, juce::Justification::centred);
+    }
     // accent underline
     g.setColour (partColour (idx).withAlpha (0.8f));
     g.fillRoundedRectangle (8, (float) getHeight() - 7, (float) getWidth() - 16, 3, 1.5f);
 }
-void PartCard::mouseDown (const juce::MouseEvent&) {
+void PartCard::mouseDown (const juce::MouseEvent& e) {
+    if (e.mods.isPopupMenu()) {   // part clipboard
+        juce::PopupMenu m;
+        m.addSectionHeader (partName (idx));
+        m.addItem (1, "Copy part");
+        m.addItem (2, "Paste part", proc.partClipboard.isValid());
+        m.addSeparator();
+        m.addItem (3, "Clear part");
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ e.getScreenX(), e.getScreenY(), 1, 1 }),
+            [sp = juce::Component::SafePointer<PartCard> (this)] (int id) {
+                if (sp == nullptr || id <= 0) return;
+                auto& p = sp->proc; const int i = sp->idx;
+                if (id == 1) { p.copyPart (i); return; }
+                if (id == 2) p.pastePart (i);
+                else if (id == 3) p.clearPart (i);
+                if (auto* ed = dynamic_cast<DrumEditor*> (p.getActiveEditor())) ed->selectPart (i);
+            });
+        return;
+    }
     proc.selectedPart = idx;
     if (auto* ed = dynamic_cast<DrumEditor*> (proc.getActiveEditor())) ed->timerCallback();
 }
 void PartCard::resized() {
     auto r = getLocalBounds().reduced (5);
-    r.removeFromTop (20); // name painted in paint()
+    r.removeFromTop (30); // name + model painted in paint()
     auto btns = r.removeFromBottom (24);
     solo.setBounds (btns.removeFromLeft (btns.getWidth() / 2).reduced (4, 3));
     mute.setBounds (btns.reduced (4, 3));
@@ -417,110 +444,142 @@ void DrumEditor::FxChainView::resized() {
     }
 }
 
-void DrumEditor::MeterComp::paint (juce::Graphics& g) {
-    auto mb = getLocalBounds().toFloat().reduced (2, 4);
-    g.setColour (juce::Colour (0xff1e1e26));
-    g.fillRoundedRectangle (mb, 4.f);
-    float m = juce::jlimit (0.f, 1.f, proc.outLevel.load());
-    int segs = 14;
-    float sh = mb.getHeight() / segs;
-    for (int i = 0; i < segs; ++i) {
-        bool lit = ((float) (i + 1) / segs) <= m;
-        juce::Colour c = i < 9 ? juce::Colour (0xffa3e635) : (i < 12 ? juce::Colour (0xfffbbf24) : juce::Colour (0xfff87171));
-        g.setColour (lit ? c : juce::Colour (0xff2a2a34));
-        float y = mb.getBottom() - (i + 1) * sh;
-        g.fillRoundedRectangle (mb.getX(), y + 1, mb.getWidth(), sh - 2, 2.f);
+ScopeSource DrumEditor::selectedScope() const {
+    ScopeSource s;
+    int p = sel();
+    s.tap = &proc.parts[p].scope;
+    s.colour = partColour (p);
+    s.title = partName (p);
+    s.sampleRate = proc.currentSampleRate();
+    return s;
+}
+
+// ================= MacroPanel =================
+MacroPanel::MacroPanel (DrumEditor& e) : ed (e) {
+    for (int k = 0; k < DrumProcessor::NumMacros; ++k) {
+        knobs[k] = std::make_unique<Knob> ("", juce::Colour (0xfff49ac1));
+        knobs[k]->val.setVisible (false); // value is painted next to the name instead
+        knobs[k]->lab.setVisible (false);
+        knobs[k]->s.setTooltip ("Macro: centre = no change. Click the target strip below to choose what it moves.");
+        addAndMakeVisible (*knobs[k]);
+        auto& nl = names[k];
+        nl.setEditable (false, true, false);
+        nl.setFont (juce::Font (11.f, juce::Font::bold));
+        nl.setColour (juce::Label::textColourId, juce::Colour (0xffe8e8ee));
+        nl.setColour (juce::Label::backgroundColourId, juce::Colour (0xff1c1c22));
+        nl.setColour (juce::Label::outlineColourId, juce::Colour (0xff34343f));
+        nl.setTooltip ("Double-click to rename");
+        nl.onTextChange = [this, k] {
+            auto t = names[k].getText().trim().toUpperCase().substring (0, 14);
+            ed.proc.parts[ed.sel()].macros[k].name = t.isEmpty() ? "MACRO " + juce::String (k + 1) : t;
+            names[k].setText (ed.proc.parts[ed.sel()].macros[k].name, juce::dontSendNotification);
+        };
+        addAndMakeVisible (nl);
     }
 }
 
-// ================= Scope + Analyzer =================
-void DrumEditor::ScopeView::paint (juce::Graphics& g) {
-    auto r = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xff17171d));
-    g.fillRoundedRectangle (r, 6.f);
-    int sel = proc.selectedPart.load();
-    auto& pe = proc.parts[sel];
-    int pos = pe.scopePos.load();
-    g.setColour (juce::Colour (0xff6a6a78));
-    g.setFont (juce::Font (10.f, juce::Font::bold));
-    g.drawText ("SCOPE  " + juce::String (partName (sel)), 8, 4, 200, 14, juce::Justification::left);
-    if (pos < 8) {
-        g.setColour (juce::Colour (0xff33333f));
-        g.drawLine (r.getX() + 6, r.getCentreY(), r.getRight() - 6, r.getCentreY());
-        return;
+void MacroPanel::refresh() {
+    int p = ed.sel();
+    auto col = partColour (p);
+    for (int k = 0; k < DrumProcessor::NumMacros; ++k) {
+        auto& kb = *knobs[k];
+        kb.att.reset();
+        kb.accent = col;
+        kb.s.setColour (juce::Slider::rotarySliderFillColourId, col);
+        kb.attach (ed.proc.apvts, DrumProcessor::macroParamID (p, k));
+        kb.s.setDoubleClickReturnValue (true, 0.5);
+        kb.s.onValueChange = [this] { repaint(); };
+        names[k].setText (ed.proc.parts[p].macros[k].name, juce::dontSendNotification);
     }
-    juce::Path path;
-    const int N = 2048;
-    for (int i = 0; i < N; i += 4) {
-        int idx = (pos - N + i) % N; if (idx < 0) idx += N;
-        float v = pe.scopeBuf[(size_t) idx];
-        float x = r.getX() + (float) i / N * r.getWidth();
-        float y = r.getCentreY() - juce::jlimit (-1.f, 1.f, v) * r.getHeight() * 0.42f;
-        if (i == 0) path.startNewSubPath (x, y); else path.lineTo (x, y);
-    }
-    g.setColour (partColour (sel).withAlpha (0.9f));
-    g.strokePath (path, juce::PathStrokeType (1.5f));
+    repaint();
 }
 
-void DrumEditor::AnalyzerView::paint (juce::Graphics& g) {
-    auto r = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xff17171d));
-    g.fillRoundedRectangle (r, 6.f);
-    int sel = proc.selectedPart.load();
-    auto& pe = proc.parts[sel];
-    int pos = pe.scopePos.load();
+void MacroPanel::paint (juce::Graphics& g) {
+    int p = ed.sel();
+    auto col = partColour (p);
     g.setColour (juce::Colour (0xff6a6a78));
-    g.setFont (juce::Font (10.f, juce::Font::bold));
-    g.drawText ("SPECTRUM", 8, 4, 200, 14, juce::Justification::left);
-    if (pos < 2048) return; // need a full window
-    const int N = 2048;
-    for (int i = 0; i < N; ++i) {
-        int idx = (pos - N + i) % N; if (idx < 0) idx += N;
-        float w = 0.5f - 0.5f * std::cos (2.f * juce::MathConstants<float>::pi * i / N);
-        work[i] = pe.scopeBuf[(size_t) idx] * w;
-        work[i + N] = 0.f;
+    g.setFont (juce::Font (9.5f, juce::Font::bold));
+    g.drawText ("CLICK TARGETS TO EDIT", 0, 0, getWidth(), 14, juce::Justification::centredLeft);
+    float uw = (float) getWidth() / DrumProcessor::NumMacros;
+    for (int k = 0; k < DrumProcessor::NumMacros; ++k) {
+        float ux = uw * k;
+        if (k > 0) { g.setColour (juce::Colour (0xff26262f)); g.drawVerticalLine ((int) ux, 20.f, (float) getHeight() - 4.f); }
+        float v = (float) knobs[k]->s.getValue();
+        int pc = juce::roundToInt ((v - 0.5f) * 200.f);
+        auto nb = names[k].getBounds();
+        g.setColour (col);
+        g.setFont (juce::Font (11.f));
+        g.drawText ((pc > 0 ? "+" : "") + juce::String (pc) + "%", nb.getX(), nb.getBottom() + 4, nb.getWidth(), 14, juce::Justification::centredLeft);
+        juce::StringArray labels;
+        for (auto& t : ed.proc.parts[p].macros[k].t)
+            if (t.param.load() >= 0 && ed.proc.macroTargetValid (p, t.param.load())) labels.add (ed.proc.macroTargetLabel (p, t.param.load()));
+        auto tr = targetRects[k];
+        g.setColour (juce::Colour (0xff1c1c22));
+        g.fillRoundedRectangle (tr.toFloat(), 3.f);
+        g.setColour (labels.isEmpty() ? juce::Colour (0xff6a6a78) : juce::Colour (0xffb8b8c4));
+        g.setFont (juce::Font (9.f));
+        g.drawFittedText (labels.isEmpty() ? juce::String ("+ add target") : labels.joinIntoString (juce::String::fromUTF8 (" \xc2\xb7 ")),
+                          tr.reduced (6, 2), juce::Justification::centred, 3);
     }
-    // juce FFT is in-place on 2*N floats
-    fft.performFrequencyOnlyForwardTransform (work);
-    double sr = proc.currentSampleRate();
-    // per-pixel magnitudes, then box-blur for a smooth line
-    const int W = juce::jmax (8, (int) r.getWidth() / 2);
-    float sm[512]; // W <= 512 at sane widths
-    int Wn = juce::jmin (W, 512);
-    for (int px = 0; px < Wn; ++px) {
-        float f = 20.f * std::pow (1000.f, (float) px / Wn); // 20..20k log
-        int bin = juce::jlimit (1, N / 2 - 1, (int) (f / sr * N));
-        float mag = work[(size_t) bin] / N;
-        sm[px] = 20.f * std::log10 (mag + 1e-7f);
+}
+
+void MacroPanel::resized() {
+    float uw = (float) getWidth() / DrumProcessor::NumMacros;
+    for (int k = 0; k < DrumProcessor::NumMacros; ++k) {
+        int ux = (int) (uw * k);
+        int kw = juce::jmin (96, (int) uw / 2);
+        knobs[k]->setBounds (ux + 4, 22, kw, kw + 28); // + hidden label rows
+        names[k].setBounds (ux + kw + 8, 34, (int) uw - kw - 16, 20);
+        targetRects[k] = { ux + 6, 22 + kw + 34, (int) uw - 14, juce::jmin (64, getHeight() - (22 + kw + 38)) };
     }
-    for (int k = 0; k < 2; ++k) // two blur passes
-        for (int px = 0; px < Wn; ++px) {
-            float a = sm[juce::jmax (0, px - 1)], b = sm[px], c = sm[juce::jmin (Wn - 1, px + 1)];
-            sm[px] = (a + b * 2.f + c) * 0.25f;
-        }
-    float top = r.getY() + 20, bot = r.getBottom() - 16;
-    juce::Path path; bool started = false;
-    for (int px = 0; px < Wn; ++px) {
-        float y = bot - juce::jlimit (0.f, 1.f, (sm[px] + 72.f) / 72.f) * (bot - top);
-        float x = r.getX() + (float) px / Wn * r.getWidth();
-        if (! started) { path.startNewSubPath (x, y); started = true; }
-        else path.lineTo (x, y);
+}
+
+void MacroPanel::mouseDown (const juce::MouseEvent& e) {
+    for (int k = 0; k < DrumProcessor::NumMacros; ++k)
+        if (targetRects[k].contains (e.getPosition())) { showTargetMenu (k); return; }
+}
+
+void MacroPanel::showTargetMenu (int k) {
+    int p = ed.sel();
+    auto& pr = ed.proc;
+    auto& m = pr.parts[p].macros[k];
+    static const float depths[] = { 1.f, 0.5f, 0.25f, 0.1f, -0.1f, -0.25f, -0.5f, -1.f };
+    auto pct = [] (float d) { int v = juce::roundToInt (d * 100.f); return (v > 0 ? "+" : "") + juce::String (v) + "%"; };
+    juce::PopupMenu menu;
+    menu.addSectionHeader (juce::String (k + 1) + "  " + m.name);
+    int n = 0;
+    for (auto& t : m.t) {
+        int prm = t.param.load();
+        if (prm < 0) continue;
+        juce::PopupMenu sub;
+        for (int di = 0; di < (int) std::size (depths); ++di)
+            sub.addItem (1000 + prm * 20 + di, pct (depths[di]), true, std::abs (t.depth.load() - depths[di]) < 1.0e-3f);
+        sub.addSeparator();
+        sub.addItem (1000 + prm * 20 + 19, "Remove");
+        auto lab = pr.macroTargetLabel (p, prm) + (pr.macroTargetValid (p, prm) ? "" : "  (inactive)");
+        menu.addSubMenu (lab + "   " + pct (t.depth.load()), sub);
+        ++n;
     }
-    g.setColour (partColour (sel).withAlpha (0.85f));
-    g.strokePath (path, juce::PathStrokeType (1.8f));
-    // frequency labels + grid
-    g.setColour (juce::Colour (0xff6a6a78));
-    g.setFont (juce::Font (9.5f));
-    const float marks[4] = { 100.f, 1000.f, 10000.f, 20000.f };
-    const char* names[4] = { "100", "1k", "10k", "20k" };
-    for (int i = 0; i < 4; ++i) {
-        float px = std::log (marks[i] / 20.f) / std::log (1000.f) * r.getWidth();
-        float x = r.getX() + juce::jlimit (0.f, r.getWidth() - 30.f, px);
-        g.setColour (juce::Colour (0xff33333f));
-        g.drawLine (x, top, x, bot);
-        g.setColour (juce::Colour (0xff6a6a78));
-        g.drawText (names[i], x + 2, bot + 1, 30, 12, juce::Justification::left);
-    }
+    if (n == 0) menu.addItem (-1, "(no targets yet)", false);
+    menu.addSeparator();
+    juce::PopupMenu add;
+    for (int prm = 0; prm < DrumProcessor::NumMacroTargets; ++prm)
+        if (pr.macroTargetValid (p, prm) && pr.macroDepth (p, k, prm) == 0.f) add.addItem (5000 + prm, pr.macroTargetLabel (p, prm));
+    menu.addSubMenu ("Add target", add, n < DrumProcessor::MaxMacroTargets);
+    menu.addItem (2, "Rename...");
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (targetRects[k])),
+        [sp = juce::Component::SafePointer<MacroPanel> (this), p, k] (int id) {
+            if (sp == nullptr || id <= 0) return;
+            auto& prc = sp->ed.proc;
+            if (id == 2) { sp->names[k].showEditor(); return; }
+            prc.pushUndo();
+            if (id >= 5000) prc.setMacroTarget (p, k, id - 5000, 0.5f);
+            else if (id >= 1000) {
+                int prm = (id - 1000) / 20, di = (id - 1000) % 20;
+                prc.setMacroTarget (p, k, prm, di == 19 ? 0.f : depths[di]);
+            }
+            sp->repaint();
+        });
 }
 
 // ================= Editor =================
@@ -560,6 +619,8 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
     };
     randKitB.onClick = [this] { proc.randomizeKit (0.7f); rebuildSynthPanel(); refreshFxRows(); };
     undoB.onClick = [this] { proc.undo(); rebuildSynthPanel(); refreshFxRows(); };
+    redoB.onClick = [this] { proc.redo(); rebuildSynthPanel(); refreshFxRows(); };
+    undoB.setTooltip ("Undo the last change: knob turns, kit edits, randomize"); redoB.setTooltip ("Redo what UNDO took back");
     initB.onClick = [this] { proc.initKit(); rebuildSynthPanel(); refreshFxRows(); };
     randPartB.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xfff49ac1));
     mutPartB.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffa78bfa));
@@ -577,7 +638,7 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
 
     addAndMakeVisible (presetBtn); addAndMakeVisible (prevB); addAndMakeVisible (nextB);
     addAndMakeVisible (scopeBox); addAndMakeVisible (randPartB); addAndMakeVisible (mutPartB);
-    addAndMakeVisible (randKitB); addAndMakeVisible (undoB); addAndMakeVisible (initB);
+    addAndMakeVisible (randKitB); addAndMakeVisible (undoB); addAndMakeVisible (redoB); addAndMakeVisible (initB);
     addAndMakeVisible (masterDial); addAndMakeVisible (masterLab);
     kitLab.setFont (juce::Font (12.f, juce::Font::bold));
     kitLab.setColour (juce::Label::textColourId, juce::Colour (0xff8a8a98));
@@ -593,14 +654,48 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
     tabAmp.onClick = [this] { tab = 1; rebuildSynthPanel(); };
     tabPitch.onClick = [this] { tab = 2; rebuildSynthPanel(); };
     tabSend.onClick = [this] { tab = 3; rebuildSynthPanel(); };
+    tabMacro.onClick = [this] { tab = 4; rebuildSynthPanel(); };
     tabSynth.setClickingTogglesState (true); tabAmp.setClickingTogglesState (true);
     tabPitch.setClickingTogglesState (true); tabSend.setClickingTogglesState (true);
+    tabMacro.setClickingTogglesState (true);
+    macroPanel = std::make_unique<MacroPanel> (*this);
+    synthPanel.addChildComponent (*macroPanel);
     tabSynth.setToggleState (true, juce::dontSendNotification);
-    trigB.onClick = [this] {
-        // audition: trigger via midi-note match through processBlock queue is complex; use direct voice trigger
-        auto& pe = proc.parts[sel()];
-        for (auto& v : pe.voices) if (! v.active) { v.trigger (sel(), pe.params, 0.9f, 0.f); break; }
+    trigB.onClick = [this] { proc.auditionReq = sel(); };   // audio thread plays it like a MIDI hit (models, REVERSE)
+    // MODEL: picking one loads its default knobs (undoable); right-click locks it from RANDOMIZE
+    modelBox.onChange = [this] {
+        int m = modelBox.getSelectedId() - 1;
+        if (m >= 0 && m != shownModel()) { proc.setPartModel (sel(), m); rebuildSynthPanel(); }
     };
+    modelBox.setTooltip ("Synthesis engine for this part. CLASSIC = the original voice");
+    modelLab.onRightClick = [this] {   // locks the engine choice only; knobs lock one by one
+        proc.toggleLock (sel(), DrumProcessor::LockModel);
+        modelLab.locked = proc.isLocked (sel(), DrumProcessor::LockModel); modelLab.repaint();
+    };
+    revB.setClickingTogglesState (true);
+    revB.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffa78bfa));
+    revB.setTooltip ("Play this part's sound backwards");
+    revB.onClick = [this] {
+        if (auto* q = proc.apvts.getParameter ("p" + juce::String (sel()) + "_rev"))
+            q->setValueNotifyingHost (revB.getToggleState() ? 1.f : 0.f);
+        for (auto& c : cards) c->repaint();
+    };
+    outBox.addItem ("MAIN", 1);
+    for (int o = 1; o <= DrumProcessor::NumAuxOuts; ++o) outBox.addItem ("OUT " + juce::String (o + 1), o + 1);
+    outBox.setTooltip ("Output bus for this part (enable the extra outputs in your host; disabled buses fall back to MAIN)");
+    outBox.onChange = [this] { proc.parts[sel()].output = outBox.getSelectedId() - 1; };
+    chokeBox.addItem ("NONE", 1);
+    for (int i = 1; i <= DrumProcessor::NumChokeGroups; ++i) chokeBox.addItem ("GROUP " + juce::String (i), i + 1);
+    chokeBox.setTooltip ("Parts in the same choke group cut each other off (the hats share group 1)");
+    chokeBox.onChange = [this] { proc.parts[sel()].choke = chokeBox.getSelectedId() - 1; };
+    synthPanel.addAndMakeVisible (chokeBox); synthPanel.addAndMakeVisible (chokeLab);
+    for (auto* l : { (juce::Label*) &modelLab, &outLab, &chokeLab }) {
+        l->setFont (juce::Font (10.f, juce::Font::bold));
+        l->setColour (juce::Label::textColourId, juce::Colour (0xff9a9aa8));
+        l->setJustificationType (juce::Justification::centredRight);
+    }
+    synthPanel.addAndMakeVisible (modelBox); synthPanel.addAndMakeVisible (modelLab);
+    synthPanel.addAndMakeVisible (revB); synthPanel.addAndMakeVisible (outBox); synthPanel.addAndMakeVisible (outLab);
     waveBox.addItemList ({ "Sine","Tri","Saw","Square","FM" }, 1);
     noiseBox.addItemList ({ "White","Pink","Violet","Metallic","Digital","Crackle","Tape","Resonant" }, 1);
     waveBox.onChange = [this] {
@@ -613,7 +708,7 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
     };
     // SAT selector removed: voice saturation is fixed Soft, DRIVE knob + DISTORTION FX carry the grit.
     synthPanel.addAndMakeVisible (tabSynth); synthPanel.addAndMakeVisible (tabAmp);
-    synthPanel.addAndMakeVisible (tabPitch); synthPanel.addAndMakeVisible (tabSend);
+    synthPanel.addAndMakeVisible (tabPitch); synthPanel.addAndMakeVisible (tabSend); synthPanel.addAndMakeVisible (tabMacro);
     synthPanel.addAndMakeVisible (partTitle); synthPanel.addAndMakeVisible (trigB);
     synthPanel.addAndMakeVisible (waveBox); synthPanel.addAndMakeVisible (noiseBox);
     synthPanel.addAndMakeVisible (waveLab); synthPanel.addAndMakeVisible (noiseLab);
@@ -706,20 +801,88 @@ static juce::String fmtVal (const ParamMeta& m, float v) {
     return juce::String (v, 1);
 }
 
+int DrumEditor::shownModel() const {
+    if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (proc.apvts.getParameter ("p" + juce::String (sel()) + "_model")))
+        return c->getIndex();
+    return 0;
+}
+
+// the selected part's colour drives the shared accent: page / sub tabs, toggles,
+// output fader and limiter all follow the section being edited
+void DrumEditor::applyPartAccent (int p) {
+    const auto col = partColour (p);
+    lnf.accent = col;
+    lnf.setColour (juce::Slider::rotarySliderFillColourId, col);
+    for (auto* b : { &viewSynth, &viewPartFx, &viewGlobFx })
+        b->setColour (juce::Slider::rotarySliderFillColourId, col);
+    masterFader.setColour (juce::Slider::thumbColourId, col);
+    masterFader.setColour (juce::Slider::trackColourId, col.withAlpha (0.5f));
+    repaint();
+}
+
 void DrumEditor::rebuildSynthPanel() {
     for (auto& k : synthKnobs) synthPanel.removeChildComponent (k.get());
     synthKnobs.clear();
     int p = sel();
+    applyPartAccent (p);
     partTitle.setText (juce::String (partName (p)), juce::dontSendNotification);
     partTitle.setFont (juce::Font (15.f, juce::Font::bold));
     partTitle.setColour (juce::Label::textColourId, partColour (p));
+    const int model = shownModel();
+    const ModelDef* md = modelDef (p, model);
+    if (md && tab == 2) tab = 0;   // models have no PITCH page (their pitch knobs live on SYNTH)
+    tabPitch.setVisible (md == nullptr);
+    waveBox.setVisible (md == nullptr); waveLab.setVisible (md == nullptr);
+    noiseBox.setVisible (md == nullptr); noiseLab.setVisible (md == nullptr);
+    {
+        auto names = modelNames (p);
+        bool same = modelBox.getNumItems() == names.size();
+        for (int i = 0; same && i < names.size(); ++i) same = modelBox.getItemText (i) == names[i];
+        if (! same) { modelBox.clear (juce::dontSendNotification); modelBox.addItemList (names, 1); }
+        modelBox.setSelectedId (model + 1, juce::dontSendNotification);
+        modelLab.locked = proc.isLocked (p, DrumProcessor::LockModel); modelLab.repaint();
+        revB.setToggleState (proc.apvts.getRawParameterValue ("p" + juce::String (p) + "_rev")->load() > 0.5f, juce::dontSendNotification);
+        outBox.setSelectedId (proc.parts[p].output.load() + 1, juce::dontSendNotification);
+        chokeBox.setSelectedId (proc.parts[p].choke.load() + 1, juce::dontSendNotification);
+    }
     tabSynth.setToggleState (tab == 0, juce::dontSendNotification);
     tabAmp.setToggleState (tab == 1, juce::dontSendNotification);
     tabPitch.setToggleState (tab == 2, juce::dontSendNotification);
     tabSend.setToggleState (tab == 3, juce::dontSendNotification);
+    tabMacro.setToggleState (tab == 4, juce::dontSendNotification);
+    macroPanel->setVisible (tab == 4);
+    if (tab == 4) macroPanel->refresh();
 
     std::vector<int> slots;
-    if (tab == 0) {
+    if (md != nullptr) {
+        // engine model: its own knobs on SYNTH, only PAN on AMP (the model shapes its own envelope)
+        if (tab == 0)
+            for (int k = 0; k < md->nparams; ++k) {
+                const ModelParam mp = md->p[k];
+                auto kb = std::make_unique<Knob> (mp.label, partColour (p));
+                kb->s.setColour (juce::Slider::rotarySliderFillColourId, partColour (p));
+                kb->val.setColour (juce::Label::textColourId, partColour (p).brighter (0.2f));
+                kb->attach (proc.apvts, DrumProcessor::modelParamID (p, k));
+                kb->s.onValueChange = [kbp = kb.get(), mp] {
+                    kbp->val.setText (modelFormat (mp, modelCook (mp, (float) kbp->s.getValue())), juce::dontSendNotification);
+                };
+                const int key = DrumProcessor::modelKnobLock (k);
+                kb->locked = proc.isLocked (p, key);
+                kb->s.onRightClick = [this, p, key, kbp = kb.get()] {
+                    proc.toggleLock (p, key);
+                    kbp->locked = proc.isLocked (p, key);
+                    kbp->repaint();
+                    if (kbp->locked) {   // a knob lock holds the model too (its knob means something else in another model)
+                        proc.setLocked (p, DrumProcessor::LockModel, true);
+                        modelLab.locked = true; modelLab.repaint();
+                    }
+                };
+                kb->s.onValueChange();
+                synthPanel.addAndMakeVisible (*kb);
+                synthKnobs.push_back (std::move (kb));
+            }
+    }
+    else if (tab == 0) {
         // snare: BODY/NOISE/N DECAY/TONE/DRIVE/COMP/SUB/VEL all live here
         for (int s : { 0, 8, 9, 10, 11, 12, 13, 14, 15 }) slots.push_back (s);
         for (int s = 16; s < 20; ++s) if (advMetaForPart (p, s)) slots.push_back (s); // PUNCH/BOOST/NZ>FX, SFX LFO...
@@ -732,7 +895,8 @@ void DrumEditor::rebuildSynthPanel() {
     }
     else { /* FX SEND: send levels + shared returns, built below */ }
 
-    if (tab != 3) {
+    if (tab == 4) { /* MACROS: the macro panel takes the knob area */ }
+    else if (tab != 3) {
         for (int s : slots) {
             const ParamMeta* sm = slotMeta (p, s);
             ParamMeta mm = sm ? *sm : ParamMeta { "?", 0.f, 1.f, 0.f, false, "" };
@@ -770,34 +934,62 @@ void DrumEditor::rebuildSynthPanel() {
             synthKnobs.push_back (std::move (pankb));
         }
     } else {
-        // per-part sends + the shared return settings (affect every part)
+        // per-part sends (automatable parameters) + the shared return settings (affect every part)
         auto pct = [] (float v) { return juce::String ((int) std::round (v * 100)) + "%"; };
-        struct SendKnob { const char* label; std::atomic<float>* tgt; std::function<juce::String (float)> fmt; int lockKey; };
-        SendKnob defs[6] = {
-            { "SEND REV",  &proc.parts[p].sendRev, pct, DrumProcessor::LockSendRev },
-            { "SEND DLY",  &proc.parts[p].sendDly, pct, DrumProcessor::LockSendDly },
-            { "REV DECAY", &proc.revDecay, [] (float v) { return juce::String (FxProcessor::rt60FromKnob (v), 2) + "s"; }, -1 },
-            { "REV DAMP",  &proc.revDamp, pct, -1 },
-            { "DLY TIME",  &proc.dlyTime, [] (float v) { return juce::String ((0.02f + v * v * 1.2f) * 1000.f, 0) + "ms"; }, -1 },
-            { "DLY FDBK",  &proc.dlyFb, pct, -1 },
+        for (int d = 0; d < 2; ++d) {
+            auto kb = std::make_unique<Knob> (d ? "SEND DLY" : "SEND REV", partColour (p));
+            kb->s.setColour (juce::Slider::rotarySliderFillColourId, partColour (p));
+            kb->val.setColour (juce::Label::textColourId, partColour (p).brighter (0.2f));
+            kb->attach (proc.apvts, DrumProcessor::sendParamID (p, d == 1));
+            kb->s.onValueChange = [kbp = kb.get(), pct] { kbp->val.setText (pct ((float) kbp->s.getValue()), juce::dontSendNotification); };
+            kb->s.onValueChange();
+            const int key = d ? DrumProcessor::LockSendDly : DrumProcessor::LockSendRev;
+            kb->locked = proc.isLocked (p, key);
+            kb->s.onRightClick = [this, p, key, kbp = kb.get()] {
+                proc.toggleLock (p, key);
+                kbp->locked = proc.isLocked (p, key);
+                kbp->repaint();
+            };
+            synthPanel.addAndMakeVisible (*kb);
+            synthKnobs.push_back (std::move (kb));
+        }
+        auto* pr = &proc;
+        auto dlyFmt = [pr] (float v) {
+            int d = pr->dlySync.load();
+            float sec = d >= 0 ? (float) TempoSync::divisionSeconds (d, pr->hostBpm.load()) : FxProcessor::sendDelaySeconds (v);
+            return (d >= 0 ? juce::String (TempoSync::divisionName (d)) + "  " : juce::String()) + juce::String (juce::roundToInt (sec * 1000.f)) + "ms";
         };
+        struct ReturnKnob { const char* label; std::atomic<float>* tgt; std::function<juce::String (float)> fmt; };
+        ReturnKnob defs[4] = {   // the shared return knobs are never randomized: nothing to lock
+            { "REV DECAY", &proc.revDecay, [] (float v) { return juce::String (FxProcessor::rt60FromKnob (v), 2) + "s"; } },
+            { "REV DAMP",  &proc.revDamp, pct },
+            { "DLY TIME",  &proc.dlyTime, dlyFmt },
+            { "DLY FDBK",  &proc.dlyFb, pct },
+        };
+        Knob* timeK = nullptr;
         for (auto& d : defs) {
             auto kb = std::make_unique<Knob> (d.label, partColour (p));
             kb->s.setColour (juce::Slider::rotarySliderFillColourId, partColour (p));
             auto* tgt = d.tgt;
             kb->setManual (tgt->load(), [tgt] (float v) { *tgt = v; }, d.fmt);
-            if (d.lockKey >= 0) { // the shared return knobs are never randomized: nothing to lock
-                int key = d.lockKey;
-                kb->locked = proc.isLocked (p, key);
-                kb->s.onRightClick = [this, p, key, kbp = kb.get()] {
-                    proc.toggleLock (p, key);
-                    kbp->locked = proc.isLocked (p, key);
-                    kbp->repaint();
-                };
-            }
+            if (tgt == &proc.dlyTime) timeK = kb.get();
             synthPanel.addAndMakeVisible (*kb);
             synthKnobs.push_back (std::move (kb));
         }
+        // DLY SYNC: FREE, then the shared tempo divisions (host tempo, 120 BPM without one)
+        constexpr int steps = TempoSync::NumDivisions;
+        auto sk = std::make_unique<Knob> ("DLY SYNC", partColour (p));
+        sk->s.setColour (juce::Slider::rotarySliderFillColourId, partColour (p));
+        sk->setManual ((float) (proc.dlySync.load() + 1) / steps, [pr, timeK] (float v) {
+            pr->dlySync = juce::roundToInt (v * steps) - 1;
+            timeK->s.setAlpha (pr->dlySync.load() >= 0 ? 0.45f : 1.f);
+            timeK->val.setText (timeK->fmtr ((float) timeK->s.getValue()), juce::dontSendNotification);
+        }, [] (float v) { int d = juce::roundToInt (v * steps) - 1; return d < 0 ? juce::String ("FREE") : juce::String (TempoSync::divisionName (d)); });
+        sk->s.setRange (0.0, 1.0, 1.0 / steps);
+        sk->s.setTooltip ("FREE: DLY TIME sets the delay. Otherwise the delay follows the host tempo.");
+        timeK->s.setAlpha (proc.dlySync.load() >= 0 ? 0.45f : 1.f);
+        synthPanel.addAndMakeVisible (*sk);
+        synthKnobs.push_back (std::move (sk));
     }
     waveLab.locked = proc.isLocked (p, DrumProcessor::LockWave);
     noiseLab.locked = proc.isLocked (p, DrumProcessor::LockNoise);
@@ -848,7 +1040,8 @@ void DrumEditor::resized() {
     presetBtn.setBounds (header.removeFromLeft (230).reduced (2));
     nextB.setBounds (header.removeFromLeft (30).reduced (2));
     header.removeFromLeft (8);
-    undoB.setBounds (header.removeFromLeft (70).reduced (2));
+    undoB.setBounds (header.removeFromLeft (62).reduced (2));
+    redoB.setBounds (header.removeFromLeft (62).reduced (2));
     initB.setBounds (header.removeFromLeft (60).reduced (2));
     scopeBox.setBounds (header.removeFromLeft (80).reduced (2));
     randPartB.setBounds (header.removeFromLeft (110).reduced (2));
@@ -885,12 +1078,27 @@ void DrumEditor::resized() {
 
     // synth panel internals
     auto sr = synthPanel.getLocalBounds().reduced (10);
-    partTitle.setBounds (sr.removeFromTop (22));
+    {
+        auto titleRow = sr.removeFromTop (24);
+        outBox.setBounds (titleRow.removeFromRight (90).reduced (1));
+        outLab.setBounds (titleRow.removeFromRight (36).reduced (1));
+        titleRow.removeFromRight (8);
+        chokeBox.setBounds (titleRow.removeFromRight (92).reduced (1));
+        chokeLab.setBounds (titleRow.removeFromRight (50).reduced (1));
+        titleRow.removeFromRight (8);
+        revB.setBounds (titleRow.removeFromRight (78).reduced (1));
+        titleRow.removeFromRight (8);
+        modelBox.setBounds (titleRow.removeFromRight (150).reduced (1));
+        modelLab.setBounds (titleRow.removeFromRight (62).reduced (1));
+        partTitle.setBounds (titleRow);
+        sr.removeFromTop (2);
+    }
     auto tabRow = sr.removeFromTop (26);
     tabSynth.setBounds (tabRow.removeFromLeft (62).reduced (1));
     tabAmp.setBounds (tabRow.removeFromLeft (48).reduced (1));
-    tabPitch.setBounds (tabRow.removeFromLeft (52).reduced (1));
+    if (tabPitch.isVisible()) tabPitch.setBounds (tabRow.removeFromLeft (52).reduced (1));   // hidden for engine models
     tabSend.setBounds (tabRow.removeFromLeft (62).reduced (1));
+    tabMacro.setBounds (tabRow.removeFromLeft (66).reduced (1));
     lockHint.setBounds (tabRow.removeFromLeft (120).reduced (6, 1));
     trigB.setBounds (tabRow.removeFromRight (72).reduced (1));
     noiseBox.setBounds (tabRow.removeFromRight (110).reduced (1));
@@ -901,12 +1109,13 @@ void DrumEditor::resized() {
     // knobs left (5 cols, compact), meter strip, scope + analyzer right
     auto knobArea = sr.removeFromLeft ((int) (sr.getWidth() * 0.56));
     auto visArea = sr;
+    if (macroPanel) macroPanel->setBounds (knobArea.reduced (4));
     meterComp.setBounds (visArea.removeFromLeft (22).reduced (2)); // real child: no coordinate bugs
     scopeView.setBounds (visArea.removeFromTop ((int) (visArea.getHeight() * 0.42)).reduced (4));
     analyzerView.setBounds (visArea.reduced (4));
     if (n > 0) {
-        int cols = 5, rows = (n + cols - 1) / cols;
-        int kcw = knobArea.getWidth() / cols, kh = knobArea.getHeight() / juce::jmax (1, rows);
+        int cols = n > 13 ? 6 : 5, rows = (n + cols - 1) / cols;
+        int kcw = knobArea.getWidth() / cols, kh = juce::jmin (150, knobArea.getHeight() / juce::jmax (1, rows));   // few knobs: no giant dials
         for (int i = 0; i < n; ++i) {
             auto kb = juce::Rectangle<int> (knobArea.getX() + (i % cols) * kcw, knobArea.getY() + (i / cols) * kh, kcw, kh).reduced (4);
             synthKnobs[(size_t) i]->setBounds (kb);
@@ -964,6 +1173,8 @@ void DrumEditor::timerCallback() {
         kitLab.setText (style.isEmpty() ? proc.kitName : proc.kitName + "  |  " + style, juce::dontSendNotification);
         presetBtn.setButtonText (proc.kitName);
     }
+    undoB.setEnabled (! proc.undoStack.empty());
+    redoB.setEnabled (! proc.redoStack.empty());
     scopeView.repaint();
     analyzerView.repaint();
     meterComp.repaint();

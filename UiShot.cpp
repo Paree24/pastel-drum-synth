@@ -71,6 +71,7 @@ int main (int argc, char** argv) {
     click (e, "AMP");    shot (e, out.getChildFile ("03_snare_amp.png"));
     click (e, "PITCH");  shot (e, out.getChildFile ("04_snare_pitch.png"));
     click (e, "FX SEND"); shot (e, out.getChildFile ("05_snare_send.png"));
+    click (e, "MACROS"); shot (e, out.getChildFile ("05b_snare_macros.png"));
     proc.selectedPart = ClosedHat;
     click (e, "SYNTH");
     shot (e, out.getChildFile ("06_chh_synth.png"));
@@ -82,6 +83,23 @@ int main (int argc, char** argv) {
     proc.selectedPart = Sfx;
     click (e, "SYNTH");
     shot (e, out.getChildFile ("06c_sfx_synth.png"));
+
+    // engine models: snare LAYERED + REVERSE, its AMP page, SFX AIR HORN, kick on OUT 2
+    proc.selectedPart = Snare;
+    proc.setPartModel (Snare, 1);
+    if (auto* q = proc.apvts.getParameter ("p1_rev")) q->setValueNotifyingHost (1.f);
+    proc.parts[Kick].output = 1;
+    proc.setPartModel (Kick, 1);
+    click (e, "SYNTH");
+    shot (e, out.getChildFile ("12_snare_model.png"));
+    click (e, "AMP");    shot (e, out.getChildFile ("13_snare_model_amp.png"));
+    proc.selectedPart = Sfx;
+    proc.setPartModel (Sfx, 9);
+    click (e, "SYNTH");
+    shot (e, out.getChildFile ("14_sfx_model.png"));
+    proc.selectedPart = Kick;
+    click (e, "SYNTH");
+    shot (e, out.getChildFile ("15_kick_model_out2.png"));
 
     // snare part FX with a reverb selected
     proc.selectedPart = Snare;

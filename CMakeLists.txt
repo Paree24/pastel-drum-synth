@@ -36,7 +36,7 @@ target_sources(ModernDrumSynth PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp
     Source/dsp/Effects.cpp
     Source/Presets.cpp
     Source/PresetFiles.cpp
@@ -59,7 +59,7 @@ target_link_libraries(ModernDrumSynth PRIVATE
     juce::juce_recommended_warning_flags
 )
 
-add_executable(SmokeTest TestSmoke.cpp Source/dsp/DrumEngine.cpp Source/dsp/Effects.cpp Source/Presets.cpp)
+add_executable(SmokeTest TestSmoke.cpp Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp)
 target_include_directories(SmokeTest PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(SmokeTest PRIVATE juce::juce_dsp juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
@@ -71,7 +71,7 @@ target_compile_definitions(SmokeTest PRIVATE
 add_dependencies(SmokeTest ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # PresetDump: recipe -> Factory/*.xml data-file generator (never shipped)
-add_executable(PresetDump PresetDump.cpp Source/dsp/DrumEngine.cpp Source/dsp/Effects.cpp Source/Presets.cpp)
+add_executable(PresetDump PresetDump.cpp Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp)
 target_include_directories(PresetDump PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(PresetDump PRIVATE juce::juce_dsp juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
@@ -84,7 +84,7 @@ add_dependencies(PresetDump ModernDrumSynth) # JuceHeader.h is generated at buil
 
 # E2ETest: real processor + APVTS path headless (no editor created)
 add_executable(E2ETest TestE2E.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(E2ETest PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(E2ETest PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
@@ -117,7 +117,7 @@ add_dependencies(PastelFactory ModernDrumSynth)
 # KitProbe: renders factory recipes through the real processor, prints
 # per-part metrics + writes audition WAVs (dev tool, never shipped)
 add_executable(KitProbe KitProbe.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(KitProbe PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(KitProbe PRIVATE juce::juce_audio_processors juce::juce_audio_formats juce::juce_gui_basics juce::juce_dsp
@@ -135,7 +135,7 @@ add_dependencies(KitProbe ModernDrumSynth) # JuceHeader.h is generated at build 
 # UiShot: opens the real editor offscreen and writes PNG snapshots of every
 # view/tab (dev tool, never shipped)
 add_executable(UiShot UiShot.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(UiShot PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(UiShot PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
@@ -149,3 +149,30 @@ target_compile_definitions(UiShot PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
 )
 add_dependencies(UiShot ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
+
+# RegressRender: hashes every factory-kit part render (proves engine changes keep old kits identical)
+add_executable(RegressRender RegressRender.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+target_include_directories(RegressRender PRIVATE Source Source/dsp
+    ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
+target_link_libraries(RegressRender PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
+    juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
+    juce::juce_recommended_config_flags)
+target_compile_definitions(RegressRender PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_DISPLAY_SPLASH_SCREEN=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+add_dependencies(RegressRender ModernDrumSynth)
+
+# ModelProbe: renders every engine model at defaults (levels / lengths / WAVs for comparison)
+add_executable(ModelProbe ModelProbe.cpp Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp)
+target_include_directories(ModelProbe PRIVATE Source Source/dsp ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
+target_link_libraries(ModelProbe PRIVATE juce::juce_audio_formats juce::juce_dsp juce::juce_audio_basics juce::juce_graphics
+    juce::juce_data_structures juce::juce_events juce::juce_core juce::juce_recommended_config_flags)
+target_compile_definitions(ModelProbe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+add_dependencies(ModelProbe ModernDrumSynth)
+
+# HostCheck: loads the built .vst3 through JUCE's VST3 hosting, like a DAW (dev only, CI)
+add_executable(HostCheck HostCheck.cpp)
+target_include_directories(HostCheck PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
+target_link_libraries(HostCheck PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_recommended_config_flags)
+target_compile_definitions(HostCheck PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1)
+add_dependencies(HostCheck ModernDrumSynth)
