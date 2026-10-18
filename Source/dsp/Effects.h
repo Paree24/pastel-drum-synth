@@ -271,7 +271,10 @@ struct FxProcessor {
     static void sendReverbStereo (SlotDsp& dsp, float x, float decay, float damp, float& outL, float& outR);
     static float rt60FromKnob (float v01) { return 0.15f * std::pow (133.f, juce::jlimit (0.f, 1.f, v01)); } // 0.15 .. 20 s
     // stereo ping-pong send delay: in -> L, repeats alternate L/R
-    static void sendDelayStereo (SlotDsp& dsp, float x, float time, float fb, float sr, float& outL, float& outR);
+    // timeSec is clamped to the delay buffer (sendDelayMaxSec once the send slot is sized)
+    static void sendDelayStereo (SlotDsp& dsp, float x, float timeSec, float fb, float sr, float& outL, float& outR);
+    static float sendDelaySeconds (float v01) { return 0.02f + v01 * v01 * 1.2f; } // free-running DLY TIME knob
+    static constexpr double sendDelayMaxSec = 2.1;   // a 1/2 note down to ~57 BPM
     static void defaultSlot (int type, FxSlot& s);
     static void clearChain (FxChainState& ch); // empty: all slots OFF
     static int numActive (const FxChainState& ch);

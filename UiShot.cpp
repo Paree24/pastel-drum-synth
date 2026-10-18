@@ -71,6 +71,7 @@ int main (int argc, char** argv) {
     click (e, "AMP");    shot (e, out.getChildFile ("03_snare_amp.png"));
     click (e, "PITCH");  shot (e, out.getChildFile ("04_snare_pitch.png"));
     click (e, "FX SEND"); shot (e, out.getChildFile ("05_snare_send.png"));
+    click (e, "MACROS"); shot (e, out.getChildFile ("05b_snare_macros.png"));
     proc.selectedPart = ClosedHat;
     click (e, "SYNTH");
     shot (e, out.getChildFile ("06_chh_synth.png"));

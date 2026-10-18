@@ -93,6 +93,13 @@ struct AnalogOsc {
 
     void setSampleRate (float s) { sr = s; }
     void reset (float p = 0.f) { phase = p; fmPhase = 0.f; }
+    // 2-sample polynomial band-limited step residual (t = phase 0..1, dt = phase increment)
+    static float polyBlep (float t, float dt) {
+        if (dt <= 0.f) return 0.f;
+        if (t < dt) { t /= dt; return t + t - t * t - 1.f; }
+        if (t > 1.f - dt) { t = (t - 1.f) / dt; return t * t + t + t + 1.f; }
+        return 0.f;
+    }
     float next() {
         driftPhase += 2.f * juce::MathConstants<float>::pi * 0.7f / sr;
         float drift = driftAmt * 0.004f * std::sin (driftPhase) ;
@@ -103,8 +110,13 @@ struct AnalogOsc {
         switch (wave) {
             case 0: s = std::sin (2.f * juce::MathConstants<float>::pi * phase); break;
             case 1: s = 2.f * std::abs (2.f * (phase - 0.5f)) - 1.f; s = -s; break;
-            case 2: s = 2.f * phase - 1.f; s = juce::jlimit (-1.f, 1.f, s * 0.8f + 0.2f * std::sin (2.f * juce::MathConstants<float>::pi * phase)); break;
-            case 3: s = phase < 0.5f ? 0.8f : -0.8f; break;
+            // saw / square: PolyBLEP-corrected edges (no aliasing fold-back on high tunings)
+            case 2: s = 2.f * phase - 1.f - polyBlep (phase, inc); s = juce::jlimit (-1.f, 1.f, s * 0.8f + 0.2f * std::sin (2.f * juce::MathConstants<float>::pi * phase)); break;
+            case 3: {
+                float ph2 = phase + 0.5f; if (ph2 >= 1.f) ph2 -= 1.f;
+                s = 0.8f * ((phase < 0.5f ? 1.f : -1.f) + polyBlep (phase, inc) - polyBlep (ph2, inc));
+                break;
+            }
             case 4: {
                 fmPhase += fmRatio * inc; if (fmPhase >= 1.f) fmPhase -= 1.f;
                 float m = std::sin (2.f * juce::MathConstants<float>::pi * fmPhase);

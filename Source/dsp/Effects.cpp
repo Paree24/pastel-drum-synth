@@ -240,8 +240,7 @@ void FxProcessor::sendReverbStereo (SlotDsp& dsp, float x, float decay, float da
     dsp.reverb.process (x, rt60FromKnob (decay), 0.3f + 0.7f * decay, damp, outL, outR);
 }
 
-void FxProcessor::sendDelayStereo (SlotDsp& dsp, float x, float time, float fb, float sr, float& outL, float& outR) {
-    float tSec = 0.02f + time * time * 1.2f;
+void FxProcessor::sendDelayStereo (SlotDsp& dsp, float x, float tSec, float fb, float sr, float& outL, float& outR) {
     int n = dsp.delayBuf.getNumSamples();
     int dLen = juce::jlimit (1, n - 2, (int) (tSec * sr));
     int rp = (dsp.delayPos - dLen + n) % n;
