@@ -110,6 +110,10 @@ jobs:
         if: runner.os == 'Windows'
         run: build\E2ETest.exe
 
+      - name: HostCheck (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./build/HostCheck "build/ModernDrumSynth_artefacts/Release/VST3/Pastel Drum Synth.vst3"
+
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:

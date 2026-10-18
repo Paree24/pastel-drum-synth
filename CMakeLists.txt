@@ -169,3 +169,10 @@ target_link_libraries(ModelProbe PRIVATE juce::juce_audio_formats juce::juce_dsp
     juce::juce_data_structures juce::juce_events juce::juce_core juce::juce_recommended_config_flags)
 target_compile_definitions(ModelProbe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 add_dependencies(ModelProbe ModernDrumSynth)
+
+# HostCheck: loads the built .vst3 through JUCE's VST3 hosting, like a DAW (dev only, CI)
+add_executable(HostCheck HostCheck.cpp)
+target_include_directories(HostCheck PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
+target_link_libraries(HostCheck PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_recommended_config_flags)
+target_compile_definitions(HostCheck PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1)
+add_dependencies(HostCheck ModernDrumSynth)

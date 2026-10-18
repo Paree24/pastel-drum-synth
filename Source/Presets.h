@@ -50,7 +50,7 @@ bool overwriteFactoryPreset (int index, DrumProcessor& proc);
 bool deleteFactoryShadow (int index); // restores the shipped file (true if one existed)
 
 // ---- loading / saving kit state files (factory + user share the format) ----
-bool loadPresetFile (DrumProcessor& proc, const juce::File& file);
+bool loadPresetFile (DrumProcessor& proc, const juce::File& file); // no undo step (callers push)
 bool savePresetFile (DrumProcessor& proc, const juce::File& file);
 
 // ---- user presets (XML files on disk) ----
