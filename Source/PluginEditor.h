@@ -2,20 +2,47 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "Visuals.h"
+#include "FxPicture.h"
+#include "PastelViews.h"
 
 namespace mds {
 
 class PresetBrowser;
 
+// v3 design (after Pastel EFX Grid; see mockup/redesign_v3.png): charcoal
+// panels with thin edges, the selected part's pastel as the one accent,
+// arc knobs, live views you drag, embedded Lato.
+namespace DrumColors {
+    const juce::Colour bg      { 0xff141518 };
+    const juce::Colour panel   { 0xff1c1f24 };
+    const juce::Colour inner   { 0xff16181c };
+    const juce::Colour grid    { 0xff24272c };
+    const juce::Colour border  { 0xff33363c };
+    const juce::Colour edge    { 0xff3a3d43 };
+    const juce::Colour control { 0xff232529 };
+    const juce::Colour text    { 0xffd9d5d0 };
+    const juce::Colour textDim { 0xff8f8b85 };
+    const juce::Colour faint   { 0xff5c5a56 };
+    const juce::Colour handle  { 0xfff4f1ec };
+    const juce::Colour ink     { 0xff1b1d22 };
+    const juce::Colour amber   { 0xffe8b86a }; // padlocks
+}
+
 struct PastelLNF : juce::LookAndFeel_V4 {
     PastelLNF();
+    juce::Typeface::Ptr getTypefaceForFont (const juce::Font&) override;
+    juce::Font getTextButtonFont (juce::TextButton&, int) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
+    void positionComboBoxText (juce::ComboBox&, juce::Label&) override;
+    void drawPopupMenuBackground (juce::Graphics&, int w, int h) override;
+    juce::Typeface::Ptr latoReg, latoBold, latoBlack;
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float start, float end, juce::Slider&) override;
     void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float min, float max, juce::Slider::SliderStyle, juce::Slider&) override;
     void drawComboBox (juce::Graphics&, int w, int h, bool down, int bx, int by, int bw, int bh, juce::ComboBox&) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
-    juce::Colour accent = juce::Colour (0xfff49ac1);
+    juce::Colour accent = juce::Colour (0xffe9a3b8);
 };
 
 // slider that hands right-clicks to a callback (lock toggle) instead of dragging
@@ -55,6 +82,25 @@ struct Knob : juce::Component {
 
 class DrumEditor;
 
+// SOUND page hero: the part's rendered hit, with its amp envelope and pitch
+// sweep stacked on top as overlay views you drag (classic voice only)
+struct HitView : juce::Component {
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    std::vector<float> wave;       // normalised peaks over 1.5 s
+    juce::Colour colour;
+    juce::String note;             // shown when there is nothing to drag
+    std::unique_ptr<pastel::EnvView> amp;
+    std::unique_ptr<pastel::SweepView> pitch;
+};
+
+// a titled card behind a group of knobs (dot + title, dark well)
+struct CardBg : juce::Component {
+    CardBg (const juce::String& t, juce::Colour c) : title (t), colour (c) { setInterceptsMouseClicks (false, false); }
+    void paint (juce::Graphics&) override;
+    juce::String title; juce::Colour colour;
+};
+
 // the four macros of the selected part (MACROS tab)
 struct MacroPanel : juce::Component {
     explicit MacroPanel (DrumEditor& e);
@@ -76,7 +122,7 @@ struct PartCard : juce::Component {
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
     int idx; DrumProcessor& proc;
-    Knob tune, level;
+    Knob tune, level;              // tune lives on the SOUND page now (hidden here); level is the bar
     juce::TextButton solo, mute;
 };
 
@@ -103,6 +149,8 @@ public:
         juce::Label emptyLab { {}, "EMPTY - click + ADD to insert an effect" };
         std::vector<std::unique_ptr<Knob>> knobs;
         std::vector<std::unique_ptr<Chip>> chips;
+        FxPicture picture;    // v3: the selected effect, drawn and dragged (the knobs stay in sync)
+        void syncKnobs();
     };
 
     DrumEditor (DrumProcessor&);
@@ -142,18 +190,24 @@ private:
     ScopeSource selectedScope() const;
     ScopeView scopeView { [this] { return selectedScope(); } };
     SpectrumView analyzerView { [this] { return selectedScope(); } };
-    MeterComp meterComp { [this] { return proc.outLevel.load(); } };
+    MeterComp meterComp { [this] { return proc.outLevel.load(); }, false };   // header, horizontal
     // main view tabs: synth engine | per-part FX | global FX
     juce::TextButton viewSynth { "SYNTH" }, viewPartFx { "PART FX" }, viewGlobFx { "GLOBAL FX" };
     int mainView = 0;
-    juce::Rectangle<int> footerRect;
+    juce::Rectangle<int> footerRect, contentRect;
     // synth panel
     juce::Component synthPanel, fxPanel, globalPanel, outPanel, footPanel;
-    juce::TextButton tabSynth { "SYNTH" }, tabAmp { "AMP" }, tabPitch { "PITCH" }, tabSend { "FX SEND" }, tabMacro { "MACROS" };
+    // pages of the part editor (AMP / PITCH live on the SOUND page's hit graph now)
+    juce::TextButton tabSynth { "SOUND" }, tabAmp { "AMP" }, tabPitch { "PITCH" }, tabSend { "RETURNS" }, tabMacro { "MACROS" };
     std::unique_ptr<MacroPanel> macroPanel;
     int tab = 0;
     juce::Label partTitle;
     std::vector<std::unique_ptr<Knob>> synthKnobs;
+    std::unique_ptr<HitView> hitView;               // SOUND page: the hit you drag
+    juce::uint64 hitSig = 0; int hitPart = -1;
+    std::vector<std::unique_ptr<CardBg>> cardBgs;   // titled groups behind the knobs
+    struct Group { juce::Rectangle<int> bounds; std::vector<Knob*> knobs; };
+    std::vector<Group> groups;
     juce::ComboBox waveBox, noiseBox;
     LockLabel waveLab { {}, "WAVE" }, noiseLab { {}, "NOISE" };
     juce::Label lockHint { {}, "RIGHT-CLICK = LOCK" };

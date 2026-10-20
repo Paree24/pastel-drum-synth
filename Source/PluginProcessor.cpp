@@ -1023,6 +1023,59 @@ void DrumProcessor::mutateModel (int part, float amount) {
             if (! modelParamIsEnvelope (md->p[k]) && ! isLocked (part, modelKnobLock (k))) pp.m[k] = juce::jlimit (0.f, 1.f, pp.m[k] + (liveRng.nextFloat() * 2.f - 1.f) * amount * 0.25f);
 }
 
+// ---- UI thumbnails ----
+std::vector<float> DrumProcessor::renderThumbnail (int p, int buckets, juce::uint64& sig) {
+    if (p < 0 || p >= NumParts || buckets <= 0) return {};
+    float off[NumMacroTargets];
+    macroOffsets (p, off);
+    PartParams pp;
+    defaultParamsForPart (p, pp);
+    for (int s = 0; s < 20; ++s)
+        if (slotRaw[p][s]) pp.p[s] = applyMacro (slotRange[p][s], slotRaw[p][s]->load(), off[s]);
+    pp.wave = juce::jlimit (0, 4, (int) std::round (waveRaw[p]->load()));
+    pp.noiseType = juce::jlimit (0, 7, (int) std::round (noiseRaw[p]->load()));
+    readPartFromApvts (p, pp);
+    const float tuneOff = applyMacro (tuneRange, tuneRaw[p]->load(), off[MT_Tune]);
+    const bool reversed = pp.reverse;
+    juce::uint64 h = 1469598103934665603ull ^ (juce::uint64) buckets;
+    auto mixIn = [&h] (const void* d, size_t nBytes) {
+        auto* b = static_cast<const unsigned char*> (d);
+        for (size_t i = 0; i < nBytes; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    };
+    mixIn (pp.p, sizeof (pp.p)); mixIn (&pp.wave, sizeof (int)); mixIn (&pp.noiseType, sizeof (int));
+    mixIn (&pp.model, sizeof (int)); mixIn (pp.m, sizeof (pp.m)); mixIn (&tuneOff, sizeof (float)); mixIn (&reversed, sizeof (bool));
+    if (h == sig) return {};
+    sig = h;
+    constexpr float sr = 16000.f;
+    auto v = std::make_unique<DrumVoice>();
+    v->prepare (sr);
+    v->noise.rng.setSeed (7777 + p);
+    pp.reverse = false;
+    v->trigger (p, pp, 1.0f, tuneOff);
+    std::vector<float> data;
+    const int maxLen = (int) (sr * 1.5f);
+    data.reserve ((size_t) maxLen);
+    for (int i = 0; i < maxLen && v->active; ++i) data.push_back (v->renderWithParams (pp));
+    if (reversed) std::reverse (data.begin(), data.end());
+    std::vector<float> out ((size_t) buckets, 0.f);
+    if (data.empty()) return out;
+    // fit the sound's own length (trimmed where it falls below -54 dB of its peak)
+    float pk = 0.f;
+    for (float x : data) pk = std::max (pk, std::abs (x));
+    size_t len = data.size();
+    if (! reversed) while (len > 1 && std::abs (data[len - 1]) < pk * 0.002f) --len;
+    len = std::max (len, (size_t) (0.05f * sr));
+    pk = 0.f;
+    for (int b = 0; b < buckets; ++b) {
+        const size_t i0 = (size_t) ((double) b / buckets * (double) len), i1 = (size_t) ((double) (b + 1) / buckets * (double) len);
+        float m = 0.f;
+        for (size_t i = i0; i < i1 && i < data.size(); ++i) m = std::max (m, std::abs (data[i]));
+        out[(size_t) b] = m; pk = std::max (pk, m);
+    }
+    if (pk > 0.f) for (auto& x : out) x /= pk;
+    return out;
+}
+
 // ---- REVERSE ----
 // The part's sound (whatever engine) is rendered once at full velocity, trimmed, faded and
 // reversed on the message thread; hits then play that buffer. Re-rendered when any setting

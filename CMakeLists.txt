@@ -14,6 +14,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# embedded Lato (SIL OFL 1.1, see Assets/OFL-NOTICE.txt): the v3 UI type
+juce_add_binary_data(DrumAssets HEADER_NAME DrumAssets.h NAMESPACE DrumAssets
+    SOURCES Assets/Lato-Regular.ttf Assets/Lato-Bold.ttf Assets/Lato-Black.ttf)
+
 juce_add_plugin(ModernDrumSynth
     COMPANY_NAME "Pastel Drum Synth"
     BUNDLE_ID "com.pasteldrumsynth.pasteldrumsynth"
@@ -34,7 +38,7 @@ juce_generate_juce_header(ModernDrumSynth)
 
 target_sources(ModernDrumSynth PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
+    Source/PluginEditor.cpp Source/PastelViews.cpp
     Source/PresetBrowser.cpp
     Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp
     Source/dsp/Effects.cpp
@@ -51,7 +55,7 @@ target_compile_definitions(ModernDrumSynth PRIVATE
     JUCE_DISPLAY_SPLASH_SCREEN=0
 )
 
-target_link_libraries(ModernDrumSynth PRIVATE
+target_link_libraries(ModernDrumSynth PRIVATE DrumAssets
     juce::juce_audio_utils
     juce::juce_dsp
     juce::juce_recommended_config_flags
@@ -83,11 +87,11 @@ target_compile_definitions(PresetDump PRIVATE
 add_dependencies(PresetDump ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # E2ETest: real processor + APVTS path headless (no editor created)
-add_executable(E2ETest TestE2E.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
+add_executable(E2ETest TestE2E.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
     Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(E2ETest PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
-target_link_libraries(E2ETest PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
+target_link_libraries(E2ETest PRIVATE DrumAssets juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
     juce::juce_recommended_config_flags)
 target_compile_definitions(E2ETest PRIVATE
@@ -116,11 +120,11 @@ add_dependencies(PastelFactory ModernDrumSynth)
 
 # KitProbe: renders factory recipes through the real processor, prints
 # per-part metrics + writes audition WAVs (dev tool, never shipped)
-add_executable(KitProbe KitProbe.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
+add_executable(KitProbe KitProbe.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
     Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(KitProbe PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
-target_link_libraries(KitProbe PRIVATE juce::juce_audio_processors juce::juce_audio_formats juce::juce_gui_basics juce::juce_dsp
+target_link_libraries(KitProbe PRIVATE DrumAssets juce::juce_audio_processors juce::juce_audio_formats juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
     juce::juce_recommended_config_flags)
 target_compile_definitions(KitProbe PRIVATE
@@ -134,11 +138,11 @@ add_dependencies(KitProbe ModernDrumSynth) # JuceHeader.h is generated at build 
 
 # UiShot: opens the real editor offscreen and writes PNG snapshots of every
 # view/tab (dev tool, never shipped)
-add_executable(UiShot UiShot.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
+add_executable(UiShot UiShot.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
     Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(UiShot PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
-target_link_libraries(UiShot PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
+target_link_libraries(UiShot PRIVATE DrumAssets juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
     juce::juce_recommended_config_flags)
 target_compile_definitions(UiShot PRIVATE
@@ -151,11 +155,11 @@ target_compile_definitions(UiShot PRIVATE
 add_dependencies(UiShot ModernDrumSynth) # JuceHeader.h is generated at build time by the plugin target
 
 # RegressRender: hashes every factory-kit part render (proves engine changes keep old kits identical)
-add_executable(RegressRender RegressRender.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PresetBrowser.cpp
+add_executable(RegressRender RegressRender.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
     Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
 target_include_directories(RegressRender PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
-target_link_libraries(RegressRender PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
+target_link_libraries(RegressRender PRIVATE DrumAssets juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
     juce::juce_audio_basics juce::juce_graphics juce::juce_data_structures juce::juce_events juce::juce_core
     juce::juce_recommended_config_flags)
 target_compile_definitions(RegressRender PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0

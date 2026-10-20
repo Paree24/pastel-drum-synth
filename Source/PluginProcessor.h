@@ -143,6 +143,11 @@ public:
     // REVERSE: (re)render reversed copies for parts that need one (message thread; timer + tests).
     // force = false (timer): a part whose knobs are still moving waits until they settle
     void updateReverseCaches (bool force = true);
+    // UI thumbnail of a part's hit (message thread): the part's current sound
+    // (any engine, REVERSE applied) rendered offline at 16 kHz and reduced to
+    // `buckets` normalised peak values. `sig` is the caller's last signature:
+    // returns empty (and leaves sig) when the sound has not changed since.
+    std::vector<float> renderThumbnail (int part, int buckets, juce::uint64& sig);
 
     // one history for everything: full-state snapshots (kit edits) and single
     // parameter steps ("PARAM", recorded per knob gesture: begin..end = one step)

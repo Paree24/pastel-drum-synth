@@ -28,8 +28,9 @@ inline juce::String noteName (int m) {
 }
 inline juce::Colour partColour (int p) {
     static const juce::uint32 c[] = {
-        0xfff49ac1, 0xfff87171, 0xfffbbf24, 0xfffb923c, 0xffa3e635, 0xff34d399,
-        0xff22d3ee, 0xff38bdf8, 0xff60a5fa, 0xffa78bfa, 0xfff0abfc, 0xfff9a8d4
+        // v3 pastels (one hue per part, matching the Pastel EFX Grid family)
+        0xffe9a3b8, 0xffe88a8a, 0xffe6dc9a, 0xffe8b86a, 0xffa9d58e, 0xff8fd0c2,
+        0xff86c5c5, 0xff8fc6e8, 0xff9eb9f3, 0xffb9a7f0, 0xffc3b2e8, 0xfff2b48f
     };
     return juce::Colour (c[juce::jlimit (0, 11, p)]);
 }
