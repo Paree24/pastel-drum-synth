@@ -236,7 +236,13 @@ void DrumProcessor::triggerPart (int part, float vel) {
     if (parts[part].params.reverse) {
         RevBuf::Ptr b;
         { const juce::SpinLock::ScopedLockType sl (parts[part].revLock); b = parts[part].revCur; }
-        if (b != nullptr) { tgt->startReverse (part, b, 0.3f + 0.7f * juce::jlimit (0.f, 1.f, vel)); return; }
+        if (b != nullptr) {
+            const auto& pp = parts[part].params;
+            const auto* md = pp.model > 0 ? modelDef (part, pp.model) : nullptr;
+            const float amt = md != nullptr ? modelCook (md->p[md->nparams - 1], pp.m[md->nparams - 1]) * 0.01f : pp.p[15] / 100.f;
+            tgt->startReverse (part, b, velGain (vel, amt), vel, amt);
+            return;
+        }
     }
     tgt->trigger (part, parts[part].params, vel, tuneOff);
 }

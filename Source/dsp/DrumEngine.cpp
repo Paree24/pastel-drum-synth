@@ -156,6 +156,7 @@ void DrumVoice::trigger (int partType, const PartParams& pr, float vel, float tu
             float cooked[NumModelParams] = {};
             for (int i = 0; i < md->nparams; ++i) cooked[i] = modelCook (md->p[i], pr.m[i]);
             mv.trigger (*md, cooked, velocity, tuneOffsetSt, (juce::uint32) noise.rng.nextInt());
+            setVelTone (velocity, md->nparams > 0 ? cooked[md->nparams - 1] * 0.01f : 0.f);
             return;
         }
     modelOn = false;
@@ -179,7 +180,13 @@ void DrumVoice::trigger (int partType, const PartParams& pr, float vel, float tu
     float r = pr.p[7] / 1000.f;
     if (partType == Metallic) d *= 4.f; // modes carry the decay; the amp env only gates
     amp.set (a, d, sus, r); amp.reset(); amp.noteOn();
-    pitch.trigger (pAmt, pDec, curve);
+    // soft hits: shallower pitch sweep (a lightly struck head bends less)
+    const float velAmt = pr.p[15] / 100.f;
+    pitch.trigger (pAmt * (1.f - 0.4f * velAmt * (1.f - velocity)), pDec, curve);
+    // classic cymbals darken their own tail LP with velocity (renderCymbal);
+    // a second low-pass would cost hats level, not just brightness
+    const bool cym = partType == ClosedHat || partType == OpenHat || partType == Ride || partType == Crash;
+    setVelTone (velocity, cym ? 0.f : velAmt);
     float baseMidi = 0.f;
     switch (partType) {
         case Kick: baseMidi = 43; break;       // G2 98 Hz: kick TUNE -10..-15 = 45..55 Hz
@@ -238,8 +245,7 @@ void DrumVoice::trigger (int partType, const PartParams& pr, float vel, float tu
             partials[i].amp = (i == 0 ? fundW : 1.f) / (1.f + i * 0.7f);
         }
     }
-    float velAmp = pr.p[15] / 100.f;
-    float vGain = (1.f - velAmp) + velAmp * velocity;
+    float vGain = velGain (velocity, pr.p[15] / 100.f);
     panL = panR = vGain;
     // cymbals: free-running metal phases per hit (no identical machine-gun hits)
     for (auto& ph : cymPh) ph = noise.rng.nextFloat();
@@ -337,8 +343,7 @@ float DrumVoice::renderSnare (const PartParams& pr) {
         x *= g; nz *= g;
     }
 
-    float velAmp = pr.p[15] / 100.f;
-    float vGain = (1.f - velAmp) + velAmp * velocity;
+    float vGain = velGain (velocity, pr.p[15] / 100.f);
     // NZ>FX: share of the noise that goes through the part FX; rest stays clean
     float send = juce::jlimit (0.f, 1.f, pr.p[19] / 100.f);
     postFx = nz * (1.f - send) * vGain;
@@ -429,7 +434,7 @@ float DrumVoice::renderCymbal (const PartParams& pr) {
     // ---- tail darkening: LP glides down over the decay, DAMP pulls it lower ----
     float lpEnd = hat ? 9000.f + 6000.f * tb : 9000.f - 5500.f * tb;
     float lpCut = 18000.f - (18000.f - lpEnd) * juce::jmin (1.f, t / userD);
-    lpCut *= 0.65f + 0.35f * velocity; // soft hits are darker
+    lpCut *= 1.f - 0.35f * juce::jlimit (0.f, 1.f, pr.p[15] / 100.f) * (1.f - velocity); // soft hits are darker (VEL>AMP scales it)
     sig = cymE.process (sig, lpCut, 0.6f, 0);
     if (! hat) sig *= std::exp (-t * tb * 2.f / userD); // DAMP shortens the ring
 
@@ -437,12 +442,23 @@ float DrumVoice::renderCymbal (const PartParams& pr) {
         float g = 1.f + drive * 9.f;
         sig += juce::jmin (1.f, drive * 4.f) * (std::tanh (sig * g) / std::tanh (g) - sig);
     }
-    float velAmp = pr.p[15] / 100.f;
-    float vGain = (1.f - velAmp) + velAmp * velocity;
+    float vGain = velGain (velocity, pr.p[15] / 100.f);
     return sig * env * vGain * 1.6f;
 }
 
 float DrumVoice::renderWithParams (const PartParams& pr) {
+    float s = renderRaw (pr);
+    if (velLpK < 1.f) {
+        // velocity tone on both paths (the FX-bypass share stays a share)
+        velLpA += (s - postFx - velLpA) * velLpK;
+        velLpB += (postFx - velLpB) * velLpK;
+        postFx = velLpB;
+        s = velLpA + velLpB;
+    }
+    return s;
+}
+
+float DrumVoice::renderRaw (const PartParams& pr) {
     if (! active) return 0.f;
     if (rev != nullptr) {   // REVERSE playback
         postFx = 0.f;
@@ -727,8 +743,7 @@ float DrumVoice::renderMetal (const PartParams& pr) {
     // end the voice once the modes have rung out (the amp env only gates)
     mtFollow = juce::jmax (std::abs (out), mtFollow * 0.9995f);
     if (t > 0.05f && mtFollow < 1.0e-4f) { active = false; return 0.f; }
-    float velAmp = pr.p[15] / 100.f;
-    return out * env * ((1.f - velAmp) + velAmp * velocity) * 1.2f;
+    return out * env * velGain (velocity, pr.p[15] / 100.f) * 1.2f;
 }
 
 // ---------------- SFX: sweep synth ----------------
@@ -782,8 +797,7 @@ float DrumVoice::renderSfx (const PartParams& pr) {
         if (--crushCnt <= 0) { crushCnt = 1 + (int) (c * 15.f); float steps = std::pow (2.f, 12.f - 9.f * c); crushHold = std::round (sig * steps) / steps; }
         sig = crushHold;
     }
-    float velAmp = pr.p[15] / 100.f;
-    return sig * env * ((1.f - velAmp) + velAmp * velocity) * 0.9f;
+    return sig * env * velGain (velocity, pr.p[15] / 100.f) * 0.9f;
 }
 
 } // namespace mds

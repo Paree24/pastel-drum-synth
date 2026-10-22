@@ -770,6 +770,47 @@ int main() {
                 post, tot, p0, p100, ok ? "OK" : "FAIL");
         if (! ok) ++fails;
     }
+    // VELOCITY: a real dynamic range (power curve, not the old 13 dB linear
+    // span) and soft hits darker; VEL>AMP 0 means no velocity response at all
+    {
+        auto hit = [] (int part, float vel, float velAmt, int model, double& bright) {
+            PartParams a; defaultParamsForPart (part, a);
+            a.model = model;
+            if (model > 0) { modelDefaults01 (part, model, a.m); }
+            a.p[15] = velAmt;
+            if (model > 0) if (auto* md = modelDef (part, model)) {
+                const auto& vp = md->p[md->nparams - 1];
+                a.m[md->nparams - 1] = (velAmt - vp.min) / (vp.max - vp.min); // VEL>AMP as 0..1 (linear range)
+            }
+            DrumVoice v; v.prepare (44100.f); v.noise.rng.setSeed (11);
+            v.trigger (part, a, vel, 0.f);
+            float pk = 0.f, prev = 0.f; double e = 0, d = 0;
+            for (int i = 0; i < 44100 && v.active; ++i) {
+                float x = v.renderWithParams (a);
+                pk = std::max (pk, std::abs (x));
+                e += (double) x * x; d += (double) (x - prev) * (x - prev); prev = x;
+            }
+            bright = d / std::max (1.0e-12, e); // first-difference energy share: higher = brighter
+            return 20.0 * std::log10 (std::max (1.0e-9f, pk));
+        };
+        bool ok = true;
+        for (int part : { Kick, Snare, ClosedHat, Tom1, Metallic, Sfx }) {
+            for (int model : { 0, 1 }) {
+                if (model > 0 && numModels (part) < 2) continue;
+                double b1, bh, bs, b0a, b0b;
+                const double full = hit (part, 1.f, 80.f, model, b1);
+                const double half = hit (part, 0.5f, 80.f, model, bh) - full;
+                const double soft = hit (part, 0.1f, 80.f, model, bs) - full;
+                const double flat = hit (part, 0.1f, 0.f, model, b0a) - hit (part, 1.f, 0.f, model, b0b);
+                const bool pOk = half < -6.0 && half > -15.0 && soft < -24.0 && std::abs (flat) < 1.0
+                                 && (model > 0 || bs < b1 * 0.9);
+                printf ("velocity part %d model %d: half %.1f dB, vel 0.1 %.1f dB, VEL>AMP 0 %.2f dB, brightness soft/full %.2f %s\n",
+                        part, model, half, soft, flat, bs / std::max (1.0e-12, b1), pOk ? "OK" : "FAIL");
+                ok = ok && pOk;
+            }
+        }
+        if (! ok) ++fails;
+    }
     // SNARE ends: noise + body envelopes run on their own clock (no freeze)
     {
         PartParams a; defaultParamsForPart (Snare, a);

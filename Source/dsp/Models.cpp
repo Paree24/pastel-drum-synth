@@ -1,4 +1,5 @@
 #include "Models.h"
+#include "DrumDsp.h"
 #include <cmath>
 
 namespace mds {
@@ -403,7 +404,7 @@ void ModelVoice::trigger (const ModelDef& def, const float* cooked, float veloci
     rng.seed (seed);
     vel = clampf (velocity, 0.05f, 1.f);
     float va = c[def.nparams - 1] * 0.01f;
-    gain = def.gain * ((1.f - va) + va * vel);
+    gain = def.gain * velGain (vel, va);
     ps = std::pow (2.f, tuneSt / 12.f);
     t = 0.0; n = 0;
     for (auto& p : ph) p = 0.0;

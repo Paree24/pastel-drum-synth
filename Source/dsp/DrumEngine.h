@@ -146,6 +146,12 @@ struct DrumVoice {
     float sfxLfoPh = 0.f, sfxB = 0.f;                                  // SFX LFO + FM modulator phases
     float panL = 0.7f, panR = 0.7f;
     float choke = 0.f;
+    float velLpK = 1.f, velLpA = 0.f, velLpB = 0.f; // velocity tone (1 = open)
+    void setVelTone (float vel, float amt) {
+        const float fc = velToneHz (vel, amt);
+        velLpK = fc >= 18000.f ? 1.f : 1.f - std::exp (-6.2831853f * fc / sampleRate);
+        velLpA = velLpB = 0.f;
+    }
     // live-tweakable trigger state (wave/tune keep working on sustained notes)
     float baseMidiF = 60.f, tuneOff = 0.f, lastTuneF = 9999.f;
 
@@ -161,8 +167,9 @@ struct DrumVoice {
     }
     void trigger (int partType, const PartParams& pr, float vel, float tuneOffsetSt);
     // REVERSE: play a pre-rendered, reversed copy of the part's sound
-    void startReverse (int partType, RevBuf::Ptr buf, float gainIn) {
+    void startReverse (int partType, RevBuf::Ptr buf, float gainIn, float vel = 1.f, float velAmt = 0.f) {
         part = partType; rev = buf; revPos = 0; revGain = gainIn; revFade = 1.f; revFadeStep = 0.f;
+        setVelTone (vel, velAmt);
         modelOn = false; active = buf != nullptr; postFx = 0.f; choke = 0.f;
     }
     // one-shot unless SUSTAIN is dialled in: sequencer note lengths must not
@@ -178,6 +185,7 @@ struct DrumVoice {
     bool isDone() const { return ! active; }
     float render();
     float renderWithParams (const PartParams& pr);
+    float renderRaw (const PartParams& pr); // renderWithParams before the velocity tone
     float renderSnare (const PartParams& pr);
     float renderCymbal (const PartParams& pr);
     float renderMetal (const PartParams& pr);

@@ -22,6 +22,19 @@ struct SeededRng {
     }
 };
 
+// velocity response (VEL>AMP = amt, 0..1): a power curve in amplitude, so
+// half velocity is ~-10 dB and ghost notes reach -35..-40 dB at the default 80%
+// (the old linear 0.2 + 0.8*vel spanned only 13 dB: hits all sounded alike).
+// amt 0 = no velocity response.
+inline float velGain (float vel, float amt) {
+    return std::pow (juce::jlimit (0.05f, 1.f, vel), 2.f * juce::jlimit (0.f, 1.f, amt));
+}
+// soft hits are darker: one-pole low-pass cutoff, ~20 kHz (open) at full
+// velocity down to ~2.5 kHz for ghost notes at the default 80%
+inline float velToneHz (float vel, float amt) {
+    return 20000.f * std::exp2 (-4.f * (1.f - juce::jlimit (0.f, 1.f, vel)) * juce::jlimit (0.f, 1.f, amt));
+}
+
 // ---- fast ADSR/AR envelope with exponential segments ----
 struct Env {
     enum Stage { Idle, Attack, Decay, Sustain, Release };
