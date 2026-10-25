@@ -78,6 +78,12 @@ int main() {
     juce::ScopedJuceInitialiser_GUI juceInit; // required before any MessageManager/editor use (segfaults on macOS without it)
     setvbuf (stdout, nullptr, _IONBF, 0); // unbuffered: CI shows progress even if we crash later
     int fails = 0;
+    {
+        // MIDI learn maps go to a scratch folder, never the user's ~/.config
+        auto learnDir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("drumsynth-e2e-midilearn");
+        learnDir.deleteRecursively();
+        pastel::MidiLearn::setDirectoryForTest (learnDir);
+    }
     // on the heap: the processor is ~0.5 MB and Windows threads get a 1 MB stack
     auto procHolder = std::make_unique<DrumProcessor>();
     DrumProcessor& proc = *procHolder;
@@ -1007,6 +1013,82 @@ int main() {
         proc.apvts.getParameter ("p5_rev")->setValueNotifyingHost (0.f);
         check (first != nullptr && deferred && forced, "REVERSE re-render throttled while knobs move");
         proc.initKitNoUndo();
+    }
+
+    {
+        // global MIDI learn: CC map + preset knob shared by every instance
+        using Enc = pastel::MidiLearn::Enc;
+        auto det = [] (std::vector<int> v) { return pastel::MidiLearn::detectEncoding (v); };
+        check (det ({ 65, 65, 65, 65 }) == Enc::offset64 && det ({ 63, 62, 63 }) == Enc::offset64, "midi learn: Arturia-style 64+n encoder detected");
+        check (det ({ 1, 1, 2, 1 }) == Enc::twos && det ({ 127, 127, 126 }) == Enc::twos, "midi learn: two's complement encoder detected");
+        check (det ({ 60, 61, 62, 63 }) == Enc::absolute && det ({ 0, 1, 2, 3 }) == Enc::absolute
+               && det ({ 127, 126, 125, 124 }) == Enc::absolute, "midi learn: turned absolute knob stays absolute");
+
+        auto cc = [] (int num, int val) { juce::MidiBuffer m; m.addEvent (juce::MidiMessage::controllerEvent (1, num, val), 0); return m; };
+        auto a = std::make_unique<DrumProcessor>();
+        auto& ml = a->midiLearn;
+        ml.clearAll();
+        auto* mst = a->apvts.getParameter ("master");
+        mst->setValueNotifyingHost (0.5f);
+        ml.setLearning (true);
+        mst->beginChangeGesture(); mst->endChangeGesture(); // touching the control on screen arms it
+        check (ml.getArmedName() == mst->getName (40), "midi learn: touching a control arms it");
+        const float before = mst->getValue();
+        for (int i = 0; i < 4; ++i) ml.process (cc (74, 65));
+        check (std::abs (mst->getValue() - before) < 1e-6f, "midi learn: learning CCs never move the armed control");
+        ml.tick();
+        auto maps = ml.getMappings();
+        check (maps.size() == 1 && maps[0].cc == 74 && maps[0].paramId == "master" && maps[0].enc == Enc::offset64,
+               "midi learn: CC 74 learned as a relative knob");
+        ml.setLearning (false);
+        ml.process (cc (74, 66));
+        const float up = mst->getValue();
+        ml.process (cc (74, 62));
+        check (up > before && mst->getValue() < up, "midi learn: endless knob turns the right way both directions");
+
+        auto b = std::make_unique<DrumProcessor>();
+        auto* mstB = b->apvts.getParameter ("master");
+        mstB->setValueNotifyingHost (0.5f);
+        const float bBefore = mstB->getValue();
+        b->midiLearn.process (cc (74, 70));
+        check (b->midiLearn.getMappings().size() == 1 && mstB->getValue() > bBefore, "midi learn: mapping is global, a new instance has it");
+
+        ml.setLearning (true);
+        mst->beginChangeGesture(); mst->endChangeGesture();
+        for (int v : { 10, 11, 12, 13 }) ml.process (cc (21, v));
+        ml.tick();
+        maps = ml.getMappings();
+        check (maps.size() == 1 && maps[0].cc == 21 && maps[0].enc == Enc::absolute, "midi learn: re-learning moves the control to the new knob");
+        ml.setLearning (false);
+        ml.process (cc (21, 127));
+        check (std::abs (mst->getValue() - 1.0f) < 1e-6f, "midi learn: absolute knob sets the value directly");
+
+        int stepped = 0;
+        ml.onPresetStep = [&] (int d) { stepped += d; };
+        ml.armPresetKnob();
+        ml.process (cc (114, 1));
+        for (int i = 0; i < 10; ++i) ml.tick();
+        check (ml.getPresetKnobCC() == 114, "midi learn: preset knob learned from one nudge");
+        ml.process (cc (114, 1)); ml.process (cc (114, 3));
+        ml.tick();
+        ml.process (cc (114, 127));
+        ml.tick();
+        check (stepped == 1, "midi learn: preset knob two steps forward, one back");
+        ml.onPresetStep = nullptr;
+
+        auto c = std::make_unique<DrumProcessor>();
+        auto& all = getFactoryPresets();
+        if (all.size() >= 2) {
+            int pos = 0;
+            for (size_t i = 0; i < all.size(); ++i)
+                if (all[i].index == c->currentKit) { pos = (int) i; break; }
+            const int expect = all[(size_t) ((pos + 1) % (int) all.size())].index;
+            c->midiLearn.process (cc (114, 1));
+            c->midiLearn.tick();
+            check (c->getCurrentProgram() == expect, "midi learn: preset knob loads the next kit in a new instance");
+        }
+        ml.clearAll();
+        check (ml.getMappings().empty() && ml.getPresetKnobCC() < 0, "midi learn: clear all");
     }
 
     printf (fails == 0 ? "ALL E2E TESTS PASSED\n" : "FAILURES: %d\n", fails);

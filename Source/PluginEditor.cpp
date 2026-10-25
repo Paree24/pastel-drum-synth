@@ -840,8 +840,10 @@ void MacroPanel::showTargetMenu (int k) {
 }
 
 // ================= Editor =================
-DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc (p) {
+DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc (p), midiB (p.midiLearn) {
     setLookAndFeel (&lnf);
+    midiB.setColour (juce::TextButton::buttonOnColourId, DrumColors::amber);
+    midiB.setColour (juce::Slider::rotarySliderFillColourId, DrumColors::amber); // PastelLNF fills toggled buttons with this
 
     // header
     presetLab.setText ("", juce::dontSendNotification);
@@ -895,7 +897,7 @@ DrumEditor::DrumEditor (DrumProcessor& p) : juce::AudioProcessorEditor (p), proc
     limitB.setToggleState (proc.limiterOn.load(), juce::dontSendNotification);
     limitB.onClick = [this] { proc.limiterOn = limitB.getToggleState(); };
 
-    addAndMakeVisible (presetBtn); addAndMakeVisible (prevB); addAndMakeVisible (nextB);
+    addAndMakeVisible (presetBtn); addAndMakeVisible (prevB); addAndMakeVisible (nextB); addAndMakeVisible (midiB);
     addAndMakeVisible (scopeBox); addAndMakeVisible (randPartB); addAndMakeVisible (mutPartB);
     addAndMakeVisible (randKitB); addAndMakeVisible (undoB); addAndMakeVisible (redoB); addAndMakeVisible (initB);
     addAndMakeVisible (masterDial); addAndMakeVisible (masterLab);
@@ -1346,6 +1348,8 @@ void DrumEditor::resized() {
     prevB.setBounds (header.removeFromLeft (30).reduced (2, 0));
     presetBtn.setBounds (header.removeFromLeft (200).reduced (2, 0));
     nextB.setBounds (header.removeFromLeft (30).reduced (2, 0));
+    header.removeFromLeft (10);
+    midiB.setBounds (header.removeFromLeft (64).reduced (2, 0));
     auto mhead = header.removeFromRight (100);
     masterLab.setBounds (mhead.removeFromLeft (54));
     masterDial.setBounds (mhead.withSizeKeepingCentre (34, 34));

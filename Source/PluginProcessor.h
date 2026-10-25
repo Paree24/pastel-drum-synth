@@ -6,6 +6,7 @@
 #include "dsp/TempoSync.h"
 #include "Presets.h"
 #include "Visuals.h"
+#include "MidiLearn.h"
 
 namespace mds {
 
@@ -93,6 +94,7 @@ public:
     std::atomic<int> auditionReq { -1 };   // UI TRIGGER: part to hit on the next block (same path as MIDI)
 
     juce::AudioProcessorValueTreeState apvts;
+    pastel::MidiLearn midiLearn { *this, "Pastel Drum Synth" }; // global CC map + preset knob
     juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
     int tailLenSamples = 44100 * 4; // FX tail budget after the last voice ends
     double currentSampleRate() const { return sampleRate; }

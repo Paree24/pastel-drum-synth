@@ -41,6 +41,16 @@ DrumProcessor::DrumProcessor()
     FxProcessor::clearChain (globalFx);
     loadKit (1);
     undoStack.clear();   // the startup kit is not an undo step
+    midiLearn.onPresetStep = [this] (int delta) {
+        // same walk as the header's < > buttons: factory order, wrapping
+        auto& all = getFactoryPresets();
+        if (all.empty()) return;
+        int pos = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (all[i].index == currentKit) { pos = (int) i; break; }
+        const int n = (int) all.size();
+        setCurrentProgram (all[(size_t) (((pos + delta) % n + n) % n)].index);
+    };
     gestureUndo.startValue.assign ((size_t) getParameters().size(), -1.f);
     addListener (&gestureUndo);
     startTimerHz (10);
@@ -249,6 +259,7 @@ void DrumProcessor::triggerPart (int part, float vel) {
 
 void DrumProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
     juce::ScopedNoDenormals noDenormals;
+    midiLearn.process (midi); // learned CCs land before this block renders
     pullApvtsToParts(); // cheap pointer reads; no allocation
     if (int a = auditionReq.exchange (-1); a >= 0 && a < NumParts) triggerPart (a, 0.9f);
 

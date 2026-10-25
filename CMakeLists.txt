@@ -44,6 +44,7 @@ target_sources(ModernDrumSynth PRIVATE
     Source/dsp/Effects.cpp
     Source/Presets.cpp
     Source/PresetFiles.cpp
+    Source/MidiLearn.cpp
 )
 
 target_include_directories(ModernDrumSynth PRIVATE Source Source/dsp)
@@ -88,7 +89,7 @@ add_dependencies(PresetDump ModernDrumSynth) # JuceHeader.h is generated at buil
 
 # E2ETest: real processor + APVTS path headless (no editor created)
 add_executable(E2ETest TestE2E.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp Source/MidiLearn.cpp)
 target_include_directories(E2ETest PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(E2ETest PRIVATE DrumAssets juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
@@ -121,7 +122,7 @@ add_dependencies(PastelFactory ModernDrumSynth)
 # KitProbe: renders factory recipes through the real processor, prints
 # per-part metrics + writes audition WAVs (dev tool, never shipped)
 add_executable(KitProbe KitProbe.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp Source/MidiLearn.cpp)
 target_include_directories(KitProbe PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(KitProbe PRIVATE DrumAssets juce::juce_audio_processors juce::juce_audio_formats juce::juce_gui_basics juce::juce_dsp
@@ -139,7 +140,7 @@ add_dependencies(KitProbe ModernDrumSynth) # JuceHeader.h is generated at build 
 # UiShot: opens the real editor offscreen and writes PNG snapshots of every
 # view/tab (dev tool, never shipped)
 add_executable(UiShot UiShot.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp Source/MidiLearn.cpp)
 target_include_directories(UiShot PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(UiShot PRIVATE DrumAssets juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
@@ -156,7 +157,7 @@ add_dependencies(UiShot ModernDrumSynth) # JuceHeader.h is generated at build ti
 
 # RegressRender: hashes every factory-kit part render (proves engine changes keep old kits identical)
 add_executable(RegressRender RegressRender.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/PastelViews.cpp Source/PresetBrowser.cpp
-    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp)
+    Source/dsp/DrumEngine.cpp Source/dsp/Models.cpp Source/dsp/Effects.cpp Source/Presets.cpp Source/PresetFiles.cpp Source/MidiLearn.cpp)
 target_include_directories(RegressRender PRIVATE Source Source/dsp
     ${CMAKE_CURRENT_BINARY_DIR}/ModernDrumSynth_artefacts/JuceLibraryCode)
 target_link_libraries(RegressRender PRIVATE DrumAssets juce::juce_audio_processors juce::juce_gui_basics juce::juce_dsp
