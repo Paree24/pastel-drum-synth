@@ -45,7 +45,7 @@ PastelLNF::PastelLNF() {
     pastel::Theme::accent = accent;  pastel::Theme::inner = inner;    pastel::Theme::grid = grid;
     pastel::Theme::edge = edge;      pastel::Theme::comboBg = control; pastel::Theme::text = text;
     pastel::Theme::textDim = textDim; pastel::Theme::faint = faint;   pastel::Theme::handle = handle;
-    pastel::Theme::ink = ink;        pastel::Theme::regular = latoReg; pastel::Theme::bold = latoBold;
+    pastel::Theme::ink = ink;        pastel::ThemeFonts::getInstance()->regular = latoReg; pastel::ThemeFonts::getInstance()->bold = latoBold;
     pastel::Theme::format = drumFormat;
 }
 // every plain juce::Font in the editor resolves to the embedded Lato
